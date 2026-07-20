@@ -1,0 +1,13 @@
+{
+  "source": "https://github.com/TracingInsights/RaceData/releases/latest/download/data.zip",
+  "min_year": 1950,
+  "max_year": 2026,
+  "n_races": 1171,
+  "n_races_2025": 24,
+  "backward_compatible": true,
+  "notes": [
+    "Core Ergast/Kaggle column schemas preserved",
+    "Additive: sprint_results.rank, safety_cars.csv, red_flags.csv, virtual_safety_car_estimates.json",
+    "Historical raceId values unchanged vs prior dump"
+  ]
+}
