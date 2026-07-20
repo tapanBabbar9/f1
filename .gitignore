@@ -1,10 +1,16 @@
 ROADMAP.md
+.DS_Store
 
+# race-engineer local env + heavy artifacts (keep metrics.json)
+race-engineer/.venv/
+race-engineer/artifacts/**/*.csv
+race-engineer/artifacts/**/*.pkl
+race-engineer/artifacts/**/*.joblib
+race-engineer/artifacts/fastf1_cache/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-.DS_Store
 
 # C extensions
 *.so

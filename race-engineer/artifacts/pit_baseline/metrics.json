@@ -1,0 +1,180 @@
+{
+  "phase": 1,
+  "label_definition": "pit_on_lap_plus_1",
+  "feature_set": "timing+circuit+sc+compound",
+  "feature_names": [
+    "lap",
+    "total_laps",
+    "lap_fraction",
+    "remaining_laps",
+    "position",
+    "stint_age",
+    "pit_count",
+    "pit_this_lap",
+    "gap_ahead_s",
+    "gap_behind_s",
+    "last_lap_s",
+    "lap_delta_s",
+    "drivers_on_track",
+    "circuit_id",
+    "sc_active",
+    "laps_since_sc_deploy",
+    "sc_deployed_this_lap",
+    "sc_deployed_prev_lap",
+    "compound_id",
+    "tyre_life"
+  ],
+  "splits": {
+    "train_years": [
+      2018,
+      2019,
+      2020,
+      2021,
+      2022
+    ],
+    "val_years": [
+      2023
+    ],
+    "test_years": [
+      2024,
+      2025
+    ]
+  },
+  "split_stats": {
+    "train": {
+      "split": "train",
+      "n": 109479,
+      "n_positive": 3255,
+      "positive_rate": 0.029731729372756418,
+      "n_races": 102
+    },
+    "val": {
+      "split": "val",
+      "n": 23956,
+      "n_positive": 867,
+      "positive_rate": 0.036191350809818,
+      "n_races": 22
+    },
+    "test": {
+      "split": "test",
+      "n": 52301,
+      "n_positive": 1593,
+      "positive_rate": 0.030458308636546146,
+      "n_races": 48
+    }
+  },
+  "primary_model": "hgb",
+  "models": {
+    "majority": {
+      "threshold": 0.01,
+      "val": {
+        "n": 23956,
+        "n_positive": 867,
+        "positive_rate": 0.036191350809818,
+        "threshold": 0.01,
+        "precision": 0.036191350809818,
+        "recall": 1.0,
+        "f1": 0.0698545703581356,
+        "auroc": 0.5,
+        "average_precision": 0.036191350809818,
+        "confusion": {
+          "tn": 0,
+          "fp": 23089,
+          "fn": 0,
+          "tp": 867
+        }
+      },
+      "test": {
+        "n": 52301,
+        "n_positive": 1593,
+        "positive_rate": 0.030458308636546146,
+        "threshold": 0.01,
+        "precision": 0.030458308636546146,
+        "recall": 1.0,
+        "f1": 0.05911604260214495,
+        "auroc": 0.5,
+        "average_precision": 0.030458308636546146,
+        "confusion": {
+          "tn": 0,
+          "fp": 50708,
+          "fn": 0,
+          "tp": 1593
+        }
+      }
+    },
+    "logistic": {
+      "threshold": 0.8033187401936195,
+      "val": {
+        "n": 23956,
+        "n_positive": 867,
+        "positive_rate": 0.036191350809818,
+        "threshold": 0.8033187401936195,
+        "precision": 0.1925133689839572,
+        "recall": 0.1245674740484429,
+        "f1": 0.15126050420168066,
+        "auroc": 0.6979505062477511,
+        "average_precision": 0.10697559386181275,
+        "confusion": {
+          "tn": 22636,
+          "fp": 453,
+          "fn": 759,
+          "tp": 108
+        }
+      },
+      "test": {
+        "n": 52301,
+        "n_positive": 1593,
+        "positive_rate": 0.030458308636546146,
+        "threshold": 0.8033187401936195,
+        "precision": 0.07831821929101401,
+        "recall": 0.05963590709353421,
+        "f1": 0.06771204561653599,
+        "auroc": 0.7315891595225048,
+        "average_precision": 0.07245316330096271,
+        "confusion": {
+          "tn": 49590,
+          "fp": 1118,
+          "fn": 1498,
+          "tp": 95
+        }
+      }
+    },
+    "hgb": {
+      "threshold": 0.5560506250661995,
+      "val": {
+        "n": 23956,
+        "n_positive": 867,
+        "positive_rate": 0.036191350809818,
+        "threshold": 0.5560506250661995,
+        "precision": 0.1278600269179004,
+        "recall": 0.43829296424452135,
+        "f1": 0.197968220890857,
+        "auroc": 0.7566276685827765,
+        "average_precision": 0.11621031500720296,
+        "confusion": {
+          "tn": 20497,
+          "fp": 2592,
+          "fn": 487,
+          "tp": 380
+        }
+      },
+      "test": {
+        "n": 52301,
+        "n_positive": 1593,
+        "positive_rate": 0.030458308636546146,
+        "threshold": 0.5560506250661995,
+        "precision": 0.09832429768358797,
+        "recall": 0.5009416195856874,
+        "f1": 0.1643835616438356,
+        "auroc": 0.7557220950338808,
+        "average_precision": 0.10102462365292997,
+        "confusion": {
+          "tn": 43390,
+          "fp": 7318,
+          "fn": 795,
+          "tp": 798
+        }
+      }
+    }
+  }
+}
