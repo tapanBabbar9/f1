@@ -1,2 +1,3 @@
 scikit-learn>=1.3
 fastf1>=3.3
+openai>=1.40

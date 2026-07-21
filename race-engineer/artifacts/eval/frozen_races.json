@@ -1,0 +1,16 @@
+{
+  "label_definition": "pit_on_lap_plus_1",
+  "description": "Frozen Phase 2 eval races (2021–2023). Drivers chosen at eval time: race winner + midfield finisher.",
+  "races": [
+    {"race_id": 1052, "year": 2021, "name": "Bahrain Grand Prix"},
+    {"race_id": 1056, "year": 2021, "name": "Monaco Grand Prix"},
+    {"race_id": 1061, "year": 2021, "name": "British Grand Prix"},
+    {"race_id": 1063, "year": 2021, "name": "Belgian Grand Prix"},
+    {"race_id": 1073, "year": 2021, "name": "Abu Dhabi Grand Prix"},
+    {"race_id": 1080, "year": 2022, "name": "Monaco Grand Prix"},
+    {"race_id": 1083, "year": 2022, "name": "British Grand Prix"},
+    {"race_id": 1089, "year": 2022, "name": "Italian Grand Prix"},
+    {"race_id": 1104, "year": 2023, "name": "Monaco Grand Prix"},
+    {"race_id": 1108, "year": 2023, "name": "British Grand Prix"}
+  ]
+}

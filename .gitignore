@@ -1,12 +1,23 @@
 ROADMAP.md
 .DS_Store
+.env
+.env.*
+!.env.example
+.cursorignore
 
-# race-engineer local env + heavy artifacts (keep metrics.json)
+# race-engineer local env + heavy artifacts
+# Public commits keep: pit_baseline/metrics.json, crew_chief/metrics.json, eval/frozen_races.json
 race-engineer/.venv/
+race-engineer/.local/
+race-engineer/.env
 race-engineer/artifacts/**/*.csv
+race-engineer/artifacts/**/*.json
 race-engineer/artifacts/**/*.pkl
 race-engineer/artifacts/**/*.joblib
 race-engineer/artifacts/fastf1_cache/
+!race-engineer/artifacts/pit_baseline/metrics.json
+!race-engineer/artifacts/crew_chief/metrics.json
+!race-engineer/artifacts/eval/frozen_races.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

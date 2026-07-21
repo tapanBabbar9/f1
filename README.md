@@ -37,7 +37,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 |-------|--------|-------------|--------------|--------|
 | **0 — Race Replay Loader** | **done** | `RaceReplay.get_state()` → `RaceState` | State integrity rate (target ≥ 99%) | **100%** on 2k samples (2021–2025) |
 | **1 — Baseline Pit Classifier** | **done** | Pit/stay predictions on held-out races | Pit-lap F1 / AUROC | **HGB test F1=0.164, AUROC=0.756** |
-| 2 — Crew Chief Agent | next | Structured strategy decisions | Schema validity + pit F1 | — |
+| **2 — Crew Chief Agent** | **done** | Structured strategy JSON + rationale | Schema validity + pit F1 | **schema 100%; heuristic F1=0.306 vs P1 F1=0.651** (same 150 pts) |
+| 3 — Evaluation Harness | next | Historical replay reports | Decision match + pit-lap MAE | — |
 
 ### Phase 0 — how to run
 
@@ -52,12 +53,24 @@ python3 race-engineer/scripts/run_integrity.py --samples 2000
 # one-time: python3 -m venv race-engineer/.venv && race-engineer/.venv/bin/pip install -r race-engineer/requirements.txt
 race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py
 race-engineer/.venv/bin/python race-engineer/scripts/eval_pit_baseline.py
+```
+
+### Phase 2 — how to run
+
+```bash
+# offline / CI (rule-based stand-in)
+race-engineer/.venv/bin/python race-engineer/scripts/decide_once.py --backend heuristic --year 2024 --name-contains British --driver-id 1 --lap 22
+race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --backend heuristic --samples 150
+
+# LLM (requires OPENAI_API_KEY)
+export OPENAI_API_KEY=...
+race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --backend openai --samples 150
 
 # tests
 race-engineer/.venv/bin/python -m unittest discover -s race-engineer/tests -v
 ```
 
-Metrics: [`race-engineer/artifacts/pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json).
+Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json).
 
 Code: [`race-engineer/`](race-engineer/).
 

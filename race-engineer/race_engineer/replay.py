@@ -23,6 +23,7 @@ class RaceReplay:
         self.dataset_dir = Path(dataset_dir) if dataset_dir else _DEFAULT_DATASET
         self._races: dict[int, dict] = {}
         self._drivers: dict[int, dict] = {}
+        self._circuits: dict[int, dict] = {}
         # race_id -> driver_id -> lap -> {position, milliseconds, time}
         self._laps: dict[int, dict[int, dict[int, dict]]] = defaultdict(
             lambda: defaultdict(dict)
@@ -35,14 +36,18 @@ class RaceReplay:
         self._total_laps: dict[int, int] = {}
         # (race_id, driver_id, lap) -> {compound, tyreLife}
         self._tyres: dict[tuple[int, int, int], dict] = {}
+        # race_id -> list[(deployed, retreated_or_None)]
+        self._sc_periods: dict[int, list[tuple[int, int | None]]] = {}
         self._loaded = False
 
     def load(self) -> RaceReplay:
         self._load_races()
         self._load_drivers()
+        self._load_circuits()
         self._load_lap_times()
         self._load_pit_stops()
         self._load_tyre_laps()
+        self._load_safety_cars()
         self._loaded = True
         return self
 
@@ -62,6 +67,14 @@ class RaceReplay:
         with path.open(newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 self._drivers[int(row["driverId"])] = row
+
+    def _load_circuits(self) -> None:
+        path = self.dataset_dir / "circuits.csv"
+        if not path.exists():
+            return
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                self._circuits[int(row["circuitId"])] = row
 
     def _load_lap_times(self) -> None:
         path = self.dataset_dir / "lap_times.csv"
@@ -115,6 +128,48 @@ class RaceReplay:
                     "compound": compound_v,
                     "tyreLife": life_v,
                 }
+
+    def _load_safety_cars(self) -> None:
+        path = self.dataset_dir / "safety_cars.csv"
+        if not path.exists():
+            return
+        by_key = {
+            f"{int(row['year'])} {row['name']}": rid
+            for rid, row in self._races.items()
+        }
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                rid = by_key.get(row["Race"])
+                if rid is None:
+                    continue
+                deployed = int(float(row["Deployed"]))
+                retreated_raw = (row.get("Retreated") or "").strip()
+                retreated: int | None
+                if retreated_raw == "":
+                    retreated = None
+                else:
+                    retreated = int(float(retreated_raw))
+                self._sc_periods.setdefault(rid, []).append((deployed, retreated))
+
+    def _sc_flags(
+        self, race_id: int, lap: int, total_laps: int
+    ) -> tuple[bool, int, bool, bool]:
+        periods = self._sc_periods.get(race_id, [])
+        sc_active = False
+        laps_since = 0
+        for deployed, retreated in periods:
+            end = total_laps if retreated is None else retreated
+            if deployed <= lap <= end:
+                sc_active = True
+                laps_since = lap - deployed
+                break
+        deployed_laps = {p[0] for p in periods}
+        return (
+            sc_active,
+            laps_since if sc_active else 0,
+            lap in deployed_laps,
+            (lap - 1) in deployed_laps,
+        )
 
     def list_races(self, year: int | None = None) -> list[dict]:
         self._require_loaded()
@@ -212,17 +267,27 @@ class RaceReplay:
             code = None
 
         tyre = self._tyres.get((race_id, driver_id, lap), {})
+        total_laps = self._total_laps.get(race_id, lap)
+        sc_active, laps_since_sc, sc_this, sc_prev = self._sc_flags(
+            race_id, lap, total_laps
+        )
+        circuit_id = int(race["circuitId"])
+        circuit = self._circuits.get(circuit_id, {})
+        circuit_name = (circuit.get("name") or circuit.get("circuitRef") or "").strip()
+        if not circuit_name:
+            circuit_name = f"circuit_{circuit_id}"
 
         return RaceState(
             race_id=race_id,
             year=int(race["year"]),
             race_name=race["name"],
-            circuit_id=int(race["circuitId"]),
+            circuit_id=circuit_id,
+            circuit_name=circuit_name,
             driver_id=driver_id,
             driver_ref=driver.get("driverRef", str(driver_id)),
             driver_code=code,
             lap=lap,
-            total_laps=self._total_laps.get(race_id, lap),
+            total_laps=total_laps,
             position=position,
             gap_ahead_ms=gap_ahead_ms,
             gap_behind_ms=gap_behind_ms,
@@ -235,4 +300,8 @@ class RaceReplay:
             drivers_on_track=len(cumulatives),
             tyre_compound=tyre.get("compound"),
             tyre_life=tyre.get("tyreLife"),
+            sc_active=sc_active,
+            laps_since_sc_deploy=laps_since_sc,
+            sc_deployed_this_lap=sc_this,
+            sc_deployed_prev_lap=sc_prev,
         )
