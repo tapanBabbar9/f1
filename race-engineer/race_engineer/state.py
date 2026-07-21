@@ -26,6 +26,8 @@ class RaceState:
     last_lap_times_ms: tuple[int, ...] = field(default_factory=tuple)
     cumulative_time_ms: int = 0
     drivers_on_track: int = 0
+    tyre_compound: str | None = None
+    tyre_life: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -43,6 +45,12 @@ class RaceState:
             else "—"
         )
         code = self.driver_code or self.driver_ref
+        compound = self.tyre_compound or "unknown"
+        age = (
+            f"{self.tyre_life} laps (set)"
+            if self.tyre_life is not None
+            else f"{self.stint_age_laps} laps"
+        )
         return (
             f"Race: {self.race_name} ({self.year})\n"
             f"Driver: {code}\n"
@@ -51,8 +59,8 @@ class RaceState:
             f"Gap Ahead: {gap_ahead}\n"
             f"Gap Behind: {gap_behind}\n"
             f"Tyres:\n"
-            f"  Compound: unknown\n"
-            f"  Age: {self.stint_age_laps} laps\n"
+            f"  Compound: {compound}\n"
+            f"  Age: {age}\n"
             f"Pit this lap: {'Yes' if self.pit_this_lap else 'No'}\n"
             f"Pit stops so far: {self.pit_count}\n"
             f"Last lap: {self.last_lap_time_ms} ms\n"

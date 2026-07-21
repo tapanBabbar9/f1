@@ -33,6 +33,8 @@ class RaceReplay:
         )
         # race_id -> max lap observed
         self._total_laps: dict[int, int] = {}
+        # (race_id, driver_id, lap) -> {compound, tyreLife}
+        self._tyres: dict[tuple[int, int, int], dict] = {}
         self._loaded = False
 
     def load(self) -> RaceReplay:
@@ -40,6 +42,7 @@ class RaceReplay:
         self._load_drivers()
         self._load_lap_times()
         self._load_pit_stops()
+        self._load_tyre_laps()
         self._loaded = True
         return self
 
@@ -87,6 +90,31 @@ class RaceReplay:
         for rid in self._pits:
             for did in self._pits[rid]:
                 self._pits[rid][did].sort()
+
+    def _load_tyre_laps(self) -> None:
+        path = self.dataset_dir / "tyre_laps.csv"
+        if not path.exists():
+            return
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                rid = int(row["raceId"])
+                did = int(row["driverId"])
+                lap = int(row["lap"])
+                compound = (row.get("compound") or "").strip().upper()
+                if compound in ("", "UNKNOWN", "TEST_UNKNOWN"):
+                    compound_v: str | None = None
+                else:
+                    compound_v = compound
+                life_raw = (row.get("tyreLife") or "").strip()
+                life_v: int | None
+                try:
+                    life_v = int(float(life_raw)) if life_raw else None
+                except ValueError:
+                    life_v = None
+                self._tyres[(rid, did, lap)] = {
+                    "compound": compound_v,
+                    "tyreLife": life_v,
+                }
 
     def list_races(self, year: int | None = None) -> list[dict]:
         self._require_loaded()
@@ -183,6 +211,8 @@ class RaceReplay:
         if code in (None, "", "\\N"):
             code = None
 
+        tyre = self._tyres.get((race_id, driver_id, lap), {})
+
         return RaceState(
             race_id=race_id,
             year=int(race["year"]),
@@ -203,4 +233,6 @@ class RaceReplay:
             last_lap_times_ms=tuple(window),
             cumulative_time_ms=cumulatives.get(driver_id, 0),
             drivers_on_track=len(cumulatives),
+            tyre_compound=tyre.get("compound"),
+            tyre_life=tyre.get("tyreLife"),
         )

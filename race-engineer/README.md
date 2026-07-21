@@ -44,8 +44,8 @@ Current Position: P3
 Gap Ahead: +1.001s
 Gap Behind: -1.688s
 Tyres:
-  Compound: unknown
-  Age: 22 laps
+  Compound: MEDIUM
+  Age: 22 laps (set)
 Pit this lap: No
 Pit stops so far: 0
 Last lap: 91095 ms
@@ -71,6 +71,8 @@ last_lap_time_ms: 91095
 last_lap_times_ms: (95071, 103711, 100021, 92156, 91095)
 cumulative_time_ms: 2046904
 drivers_on_track: 19
+tyre_compound: MEDIUM
+tyre_life: 22
 ```
 
 ## Phase 1 — pit baseline

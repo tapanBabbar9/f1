@@ -12,16 +12,23 @@ Ergast-compatible CSVs under [`dataset/`](dataset/) (1950–present).
 | `drivers`, `constructors` | Participants |
 | `results`, `sprint_results`, `qualifying` | Session outcomes |
 | `lap_times`, `pit_stops` | Timing (race engineer core) |
-| `tyre_laps` | Per-lap compound / tyre life (FastF1; Phase 1) |
+| `tyre_laps` | Per-lap compound / tyre life (FastF1) |
 | `*_standings`, `status` | Championships / status codes |
-| `safety_cars`, `red_flags` | Additive safety metadata (optional) |
+| `safety_cars`, `red_flags` | Full SC / red-flag periods |
+| `virtual_safety_car_estimates.json` | VSC lap estimates (additive) |
 
 **Backward compatibility:** core filenames and columns match the legacy Kaggle/Ergast schema. New fields are append-only (e.g. `sprint_results.rank`). `raceId` values for historical races are stable.
 
-Refresh from the latest public dump:
+Refresh Ergast-style tables:
 
 ```bash
 python3 race-engineer/scripts/update_dataset.py
+```
+
+Refresh tyre compounds (separate FastF1 ingest; keeps local cache):
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 2018 2019 2020 2021 2022 2023 2024 2025
 ```
 
 ## Live phases
@@ -43,8 +50,6 @@ python3 race-engineer/scripts/run_integrity.py --samples 2000
 
 ```bash
 # one-time: python3 -m venv race-engineer/.venv && race-engineer/.venv/bin/pip install -r race-engineer/requirements.txt
-# tyre compounds (FastF1 → dataset/tyre_laps.csv; cache kept under race-engineer/artifacts/fastf1_cache/)
-race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 2018 2019 2020 2021 2022 2023 2024 2025
 race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py
 race-engineer/.venv/bin/python race-engineer/scripts/eval_pit_baseline.py
 
