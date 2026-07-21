@@ -42,20 +42,27 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 
 ### Phase 0 — how to run
 
+Worked example (Hamilton, British GP 2024, lap 22) in [`race-engineer/README.md`](race-engineer/README.md).
+
 ```bash
-python3 race-engineer/scripts/print_sample_state.py --year 2024 --name-contains "Abu Dhabi" --lap 34
+python3 race-engineer/scripts/print_sample_state.py --year 2024 --name-contains British --driver-id 1 --lap 22
 python3 race-engineer/scripts/run_integrity.py --samples 2000
 ```
 
 ### Phase 1 — how to run
 
+Same board → pit-next-lap score (see package README for sample output).
+
 ```bash
 # one-time: python3 -m venv race-engineer/.venv && race-engineer/.venv/bin/pip install -r race-engineer/requirements.txt
 race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py
+race-engineer/.venv/bin/python race-engineer/scripts/score_pit_sample.py --year 2024 --name-contains British --driver-id 1 --lap 22
 race-engineer/.venv/bin/python race-engineer/scripts/eval_pit_baseline.py
 ```
 
 ### Phase 2 — how to run
+
+Same board → structured pit/stay JSON (see package README).
 
 ```bash
 # offline / CI (rule-based stand-in)
