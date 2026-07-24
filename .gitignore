@@ -15,8 +15,11 @@ race-engineer/artifacts/**/*.json
 race-engineer/artifacts/**/*.pkl
 race-engineer/artifacts/**/*.joblib
 race-engineer/artifacts/fastf1_cache/
+race-engineer-cli/.local/
+race-engineer-cli/*
 !race-engineer/artifacts/pit_baseline/metrics.json
 !race-engineer/artifacts/crew_chief/metrics.json
+!race-engineer/artifacts/tools/metrics.json
 !race-engineer/artifacts/eval/frozen_races.json
 # Byte-compiled / optimized / DLL files
 __pycache__/

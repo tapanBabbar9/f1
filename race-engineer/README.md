@@ -12,13 +12,16 @@ race-engineer/
     crew_chief.py        # Phase 2 schema + prompts
     llm.py               # openai + heuristic backends
     crew_chief_eval.py
+    tools.py / tool_agent.py / faithfulness.py   # Phase 3
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
     build_tyre_laps.py / train_pit_baseline.py / eval_pit_baseline.py
     score_pit_sample.py / decide_once.py / run_crew_chief_eval.py
+    decide_once_tools.py / run_tools_eval.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
+    tools/metrics.json
     eval/frozen_races.json
   requirements.txt
 ```
@@ -145,3 +148,37 @@ race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --ba
 ```
 
 Committed scoreboard: `artifacts/crew_chief/metrics.json` (heuristic). Predictions CSV is gitignored.
+
+## Phase 3 — tool calling
+
+**What it does:** before deciding, the agent must call bound tools (`get_gaps`, `get_stint_age`, `get_remaining_laps`, `lookup_circuit_undercut_stats`). Race/driver IDs stay server-side. Rationale numbers are checked against tool returns (**faithfulness**).
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/decide_once_tools.py --backend heuristic_tools --year 2024 --name-contains British --driver-id 1 --lap 22
+```
+
+```text
+(same pit-wall view as Phase 0)
+
+backend: heuristic_tools
+{
+  "action": "stay",
+  "tyre": null,
+  "push": "med",
+  "rationale": "Current stint still viable; stay out (stint_age_laps=22; remaining_laps=30; gap_ahead_s=1.001; ...).",
+  "tools_used": ["get_gaps", "get_stint_age", "get_remaining_laps", "lookup_circuit_undercut_stats"],
+  "faithfulness": {"faithfulness": 1.0, ...}
+}
+```
+
+**Intuition:** same pit call as Phase 2 heuristic, but every cited number comes from tools. Frozen eval (150 pts): **faithfulness 100%**, **F1=0.306** (heuristic_tools); Phase 1 HGB **0.651**. Tool use alone does not raise F1 until the LLM/policy improves — it stops invented numbers.
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/run_tools_eval.py --backend heuristic_tools --samples 150
+
+# LLM tools (requires OPENAI_API_KEY)
+export OPENAI_API_KEY=...
+race-engineer/.venv/bin/python race-engineer/scripts/run_tools_eval.py --backend openai_tools --samples 150
+```
+
+Committed scoreboard: `artifacts/tools/metrics.json` (heuristic_tools).
