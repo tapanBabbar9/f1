@@ -134,7 +134,7 @@ backend: heuristic
 }
 ```
 
-**Intuition:** on this board the heuristic **stay** matches history; Phase 1’s HGB did not. Frozen eval (150 pts): heuristic **schema=100%**, **F1=0.306**; Phase 1 HGB on the same points **F1=0.651**.
+**Intuition:** on this board the heuristic **stay** matches history; Phase 1’s HGB did not. Frozen eval (150 pts, anonymized prompt): **Sol F1=0.50**, heuristic **0.306**, Phase 1 HGB **0.651** (schema **100%**). Sol trails HGB here because it is zero-shot on a thin pit-wall snapshot, while HGB was trained on historical pit labels.
 
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --backend heuristic --samples 150

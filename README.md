@@ -37,8 +37,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 |-------|--------|-------------|--------------|--------|
 | **0 — Race Replay Loader** | **done** | `RaceReplay.get_state()` → `RaceState` | State integrity rate (target ≥ 99%) | **100%** on 2k samples (2021–2025) |
 | **1 — Baseline Pit Classifier** | **done** | Pit/stay predictions on held-out races | Pit-lap F1 / AUROC | **HGB test F1=0.164, AUROC=0.756** |
-| **2 — Crew Chief Agent** | **done** | Structured strategy JSON + rationale | Schema validity + pit F1 | **schema 100%; heuristic F1=0.306 vs P1 F1=0.651** (same 150 pts) |
-| 3 — Evaluation Harness | next | Historical replay reports | Decision match + pit-lap MAE | — |
+| **2 — Crew Chief Agent** | **done** | Structured strategy JSON + rationale | Schema validity + pit F1 | **schema 100%; Sol F1=0.50, heuristic 0.306, P1 0.651** (same 150 pts; Sol trails HGB — zero-shot on a sparse board vs a model trained on pit labels) |
+| 3 — Tool Calling | next | Crew chief must fetch gaps/stint via tools | Tool faithfulness + pit F1 | — |
 
 ### Phase 0 — how to run
 
