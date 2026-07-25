@@ -89,6 +89,7 @@ class HeuristicToolBackend(ToolAwareBackend):
         stint = by_name["get_stint_age"]
         rem = by_name["get_remaining_laps"]
         und = by_name["lookup_circuit_undercut_stats"]
+        deg = by_name.get("predict_lap_time", {})
 
         bits = [
             f"stint_age_laps={stint.get('stint_age_laps')}",
@@ -101,6 +102,10 @@ class HeuristicToolBackend(ToolAwareBackend):
         med_f = und.get("median_first_stop_lap_fraction")
         if med_f is not None:
             bits.append(f"circuit_median_first_stop_frac={med_f}")
+        if deg.get("available") and deg.get("predicted_next_lap_s") is not None:
+            bits.append(f"predicted_next_lap_s={deg['predicted_next_lap_s']}")
+            if deg.get("delta_vs_last_ms") is not None:
+                bits.append(f"pace_delta_vs_last_ms={deg['delta_vs_last_ms']}")
 
         rationale = f"{base.rationale.rstrip('.')} ({'; '.join(bits)})."
         decision = CrewChiefDecision(

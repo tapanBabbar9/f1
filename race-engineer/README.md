@@ -13,15 +13,18 @@ race-engineer/
     llm.py               # openai + heuristic backends
     crew_chief_eval.py
     tools.py / tool_agent.py / faithfulness.py   # Phase 3
+    lap_deg.py           # Phase 4 next-lap pace
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
     build_tyre_laps.py / train_pit_baseline.py / eval_pit_baseline.py
     score_pit_sample.py / decide_once.py / run_crew_chief_eval.py
     decide_once_tools.py / run_tools_eval.py
+    train_lap_deg.py / predict_lap_deg.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
     tools/metrics.json
+    lap_deg/metrics.json
     eval/frozen_races.json
   requirements.txt
 ```
@@ -182,3 +185,28 @@ race-engineer/.venv/bin/python race-engineer/scripts/run_tools_eval.py --backend
 ```
 
 Committed scoreboard: `artifacts/tools/metrics.json` (heuristic_tools).
+
+## Phase 4 — lap degradation
+
+**What it does:** predict the driver's **next lap time** from stint age, compound, circuit, and recent pace. Exposed as tool `predict_lap_time` (used by Phase 3 tool belt).
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/train_lap_deg.py
+race-engineer/.venv/bin/python race-engineer/scripts/predict_lap_deg.py --year 2024 --name-contains British --driver-id 1 --lap 22
+```
+
+```text
+(same pit-wall view as Phase 0)
+
+{
+  "predicted_next_lap_ms": 91363.0,
+  "predicted_next_lap_s": 91.363,
+  "actual_next_lap_ms": 91107,
+  "error_ms": 256.0,
+  ...
+}
+```
+
+**Intuition:** at lap 22 on mediums, the model expects ~91.4s next; actual was 91.1s (~0.26s error here). Hold-out **2024–25 test: MAE≈1.79s, MAPE≈1.77%**.
+
+Committed scoreboard: `artifacts/lap_deg/metrics.json`.

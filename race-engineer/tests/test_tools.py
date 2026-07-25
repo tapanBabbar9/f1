@@ -57,7 +57,7 @@ class TestTools(unittest.TestCase):
         backend = HeuristicToolBackend(self.replay)
         td = backend.decide_with_tools(self.state)
         self.assertIn(td.decision.action, ("pit", "stay"))
-        self.assertEqual(len(td.tool_results), 4)
+        self.assertEqual(len(td.tool_results), 5)
         self.assertGreaterEqual(td.faithfulness["faithfulness"], 0.9)
 
     def test_heuristic_tools_eval_smoke(self):

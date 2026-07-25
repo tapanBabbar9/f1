@@ -4,11 +4,38 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import median
 from typing import Any, Callable
 
 from race_engineer.replay import RaceReplay
 from race_engineer.state import RaceState
+
+# Optional lazy-loaded deg model for predict_lap_time.
+_DEG_MODEL = None
+_DEG_MODEL_PATH = (
+    Path(__file__).resolve().parents[1] / "artifacts" / "lap_deg" / "model.pkl"
+)
+
+
+def _get_deg_model():
+    global _DEG_MODEL
+    if _DEG_MODEL is False:
+        return None
+    if _DEG_MODEL is not None:
+        return _DEG_MODEL
+    try:
+        from race_engineer.lap_deg import LapDegModel
+
+        if not _DEG_MODEL_PATH.exists():
+            _DEG_MODEL = False
+            return None
+        _DEG_MODEL = LapDegModel.load(_DEG_MODEL_PATH)
+        return _DEG_MODEL
+    except Exception:  # noqa: BLE001
+        _DEG_MODEL = False
+        return None
+
 
 # OpenAI-compatible tool schemas (no identity args — binding supplies context).
 OPENAI_TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -53,6 +80,17 @@ OPENAI_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "predict_lap_time",
+            "description": (
+                "Predict the driver's NEXT lap time (ms/s) from stint age, "
+                "compound, and recent pace (lap-degradation model)."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
 ]
 
 
@@ -76,6 +114,7 @@ class ToolBelt:
             "get_stint_age": self.get_stint_age,
             "get_remaining_laps": self.get_remaining_laps,
             "lookup_circuit_undercut_stats": self.lookup_circuit_undercut_stats,
+            "predict_lap_time": self.predict_lap_time,
         }
 
     def names(self) -> list[str]:
@@ -161,6 +200,27 @@ class ToolBelt:
             "n_first_stops": n,
             "median_first_stop_lap_fraction": round(float(median(fractions)), 4),
             "median_stops_per_driver": round(float(median(stops_per_driver)), 2),
+        }
+
+    def predict_lap_time(self) -> dict[str, Any]:
+        """Next-lap pace from the Phase 4 degradation model."""
+        s = self.state
+        deg = _get_deg_model()
+        if deg is None:
+            return {
+                "available": False,
+                "note": "lap_deg model not trained (artifacts/lap_deg/model.pkl)",
+                "last_lap_ms": s.last_lap_time_ms,
+            }
+        pred_ms = deg.predict_next_lap_ms(s)
+        return {
+            "available": True,
+            "predicted_next_lap_ms": round(pred_ms, 1),
+            "predicted_next_lap_s": round(pred_ms / 1000.0, 3),
+            "last_lap_ms": s.last_lap_time_ms,
+            "delta_vs_last_ms": round(pred_ms - float(s.last_lap_time_ms), 1),
+            "stint_age_laps": s.stint_age_laps,
+            "tyre_compound": s.tyre_compound,
         }
 
     def call_all(self) -> list[ToolResult]:
