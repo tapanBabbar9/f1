@@ -106,6 +106,12 @@ class HeuristicToolBackend(ToolAwareBackend):
             bits.append(f"predicted_next_lap_s={deg['predicted_next_lap_s']}")
             if deg.get("delta_vs_last_ms") is not None:
                 bits.append(f"pace_delta_vs_last_ms={deg['delta_vs_last_ms']}")
+        sim = by_name.get("simulate_strategies", {})
+        if sim.get("available") and sim.get("oracle_option_id") is not None:
+            bits.append(
+                f"sim_oracle={sim['oracle_option_id']}:{sim.get('oracle_label')}"
+                f"(E_finish={sim.get('oracle_mean_finish_pos')})"
+            )
 
         rationale = f"{base.rationale.rstrip('.')} ({'; '.join(bits)})."
         decision = CrewChiefDecision(

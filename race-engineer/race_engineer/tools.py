@@ -91,6 +91,17 @@ OPENAI_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "simulate_strategies",
+            "description": (
+                "Monte Carlo pit-now vs stay-N option cards: mean finish "
+                "position and P(finish ≤ 3/5/10). Uses deg model + pit loss."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
 ]
 
 
@@ -115,6 +126,7 @@ class ToolBelt:
             "get_remaining_laps": self.get_remaining_laps,
             "lookup_circuit_undercut_stats": self.lookup_circuit_undercut_stats,
             "predict_lap_time": self.predict_lap_time,
+            "simulate_strategies": self.simulate_strategies,
         }
 
     def names(self) -> list[str]:
@@ -221,6 +233,25 @@ class ToolBelt:
             "delta_vs_last_ms": round(pred_ms - float(s.last_lap_time_ms), 1),
             "stint_age_laps": s.stint_age_laps,
             "tyre_compound": s.tyre_compound,
+        }
+
+    def simulate_strategies(self) -> dict[str, Any]:
+        """Phase 5 option cards: pit-next vs stay-N Monte Carlo."""
+        from race_engineer.sim import oracle_best, simulate_strategy_cards
+
+        try:
+            # Keep rolls modest for tool latency; eval_sim.py uses higher N.
+            cards = simulate_strategy_cards(self.replay, self.state, n_rolls=16, seed=42)
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "error": str(exc)}
+        best = oracle_best(cards)
+        return {
+            "available": True,
+            "n_options": len(cards),
+            "oracle_option_id": best.option_id,
+            "oracle_label": best.label,
+            "oracle_mean_finish_pos": round(best.mean_finish_pos, 3),
+            "options": [c.to_dict() for c in cards],
         }
 
     def call_all(self) -> list[ToolResult]:

@@ -1,0 +1,14 @@
+{
+  "phase": 5,
+  "n_points": 80,
+  "n_rolls": 64,
+  "seed": 42,
+  "calibration_card": "stay_to_finish_preferred",
+  "brier": {
+    "finish_le_3": 0.088,
+    "finish_le_5": 0.167,
+    "finish_le_10": 0.1201
+  },
+  "mean_abs_position_error": 2.135,
+  "note": "v0 static-rival field; Brier on stay-to-finish trajectory probs vs actual finishing position. Lower Brier is better (0=perfect)."
+}

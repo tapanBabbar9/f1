@@ -14,17 +14,20 @@ race-engineer/
     crew_chief_eval.py
     tools.py / tool_agent.py / faithfulness.py   # Phase 3
     lap_deg.py           # Phase 4 next-lap pace
+    sim.py               # Phase 5 Monte Carlo option cards
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
     build_tyre_laps.py / train_pit_baseline.py / eval_pit_baseline.py
     score_pit_sample.py / decide_once.py / run_crew_chief_eval.py
     decide_once_tools.py / run_tools_eval.py
     train_lap_deg.py / predict_lap_deg.py
+    simulate_once.py / eval_sim.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
     tools/metrics.json
     lap_deg/metrics.json
+    sim/metrics.json
     eval/frozen_races.json
   requirements.txt
 ```
@@ -210,3 +213,14 @@ race-engineer/.venv/bin/python race-engineer/scripts/predict_lap_deg.py --year 2
 **Intuition:** at lap 22 on mediums, the model expects ~91.4s next; actual was 91.1s (~0.26s error here). Hold-out **2024–25 test: MAE≈1.79s, MAPE≈1.77%**.
 
 Committed scoreboard: `artifacts/lap_deg/metrics.json`.
+
+## Phase 5 — simulation (option cards)
+
+**What it does:** roll the race forward under pit-next vs stay-N options (lap deg + pit loss + pace noise). Returns Monte Carlo cards with mean finish position and `P(finish ≤ 3/5/10)`. Exposed as tool `simulate_strategies`.
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
+race-engineer/.venv/bin/python race-engineer/scripts/eval_sim.py --samples 80
+```
+
+Committed scoreboard: `artifacts/sim/metrics.json` — **Brier P(finish≤3/5/10)≈0.09/0.17/0.12**, mean |E[pos]−actual|≈**2.1** (80 pts; static-rival v0).

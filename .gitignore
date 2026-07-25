@@ -21,6 +21,7 @@ race-engineer-cli/*
 !race-engineer/artifacts/crew_chief/metrics.json
 !race-engineer/artifacts/tools/metrics.json
 !race-engineer/artifacts/lap_deg/metrics.json
+!race-engineer/artifacts/sim/metrics.json
 !race-engineer/artifacts/eval/frozen_races.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
