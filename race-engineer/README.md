@@ -15,6 +15,7 @@ race-engineer/
     tools.py / tool_agent.py / faithfulness.py   # Phase 3
     lap_deg.py           # Phase 4 next-lap pace
     sim.py               # Phase 5 Monte Carlo option cards
+    sim_agent.py         # Phase 6 reasons over sims
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
     build_tyre_laps.py / train_pit_baseline.py / eval_pit_baseline.py
@@ -22,12 +23,14 @@ race-engineer/
     decide_once_tools.py / run_tools_eval.py
     train_lap_deg.py / predict_lap_deg.py
     simulate_once.py / eval_sim.py
+    decide_once_sim.py / eval_sim_agent.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
     tools/metrics.json
     lap_deg/metrics.json
     sim/metrics.json
+    sim_agent/metrics.json
     eval/frozen_races.json
   requirements.txt
 ```
@@ -224,3 +227,14 @@ race-engineer/.venv/bin/python race-engineer/scripts/eval_sim.py --samples 80
 ```
 
 Committed scoreboard: `artifacts/sim/metrics.json` — **Brier P(finish≤3/5/10)≈0.09/0.17/0.12**, mean |E[pos]−actual|≈**2.1** (80 pts; static-rival v0).
+
+## Phase 6 — reasons over sims
+
+**What it does:** call `simulate_strategies`, pick an option card, map to pit/stay for the next lap, and cite sim numbers (`mean_finish_pos`, `P_finish_le_*`). Offline `heuristic_sim` follows the oracle card (zero regret by construction); `pit_next_sim` always boxes next as a contrast baseline.
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/decide_once_sim.py --backend heuristic_sim --year 2024 --name-contains British --driver-id 1 --lap 22
+race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
+```
+
+Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, oracle match **100%**, faith **≈0.994**; pit-next baseline regret **≈5.50** (80 pts).

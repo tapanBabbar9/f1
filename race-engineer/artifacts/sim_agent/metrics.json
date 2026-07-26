@@ -1,0 +1,12 @@
+{
+  "phase": 6,
+  "backend": "heuristic_sim",
+  "n_points": 80,
+  "seed": 42,
+  "schema_validity": 1.0,
+  "mean_position_regret": 0.0,
+  "oracle_match_rate": 1.0,
+  "mean_faithfulness": 0.9938,
+  "pit_next_baseline_mean_regret": 5.4954,
+  "note": "Regret = E[finish|chosen] \u2212 E[finish|oracle] on Phase 5 cards. heuristic_sim follows oracle (expect ~0 regret). pit_next_baseline is always box-next for contrast."
+}

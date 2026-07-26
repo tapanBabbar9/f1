@@ -41,7 +41,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 | **3 — Tool Calling** | **done** | Gaps/stint/remaining/undercut tools before decide | Tool faithfulness + pit F1 | **faith 100%; heuristic_tools F1=0.306 vs P1 0.651** (same 150 pts) |
 | **4 — Lap Degradation** | **done** | Next-lap pace tool (`predict_lap_time`) | MAE / MAPE | **test MAE≈1.79s, MAPE≈1.77%** (2024–25) |
 | **5 — Simulation** | **done** | Monte Carlo pit-now vs stay-N option cards | Finish-position Brier | **Brier P(≤3/5/10)≈0.09/0.17/0.12; MAE≈2.1 pos** (80 pts) |
-| 6 — Evaluation Harness | next | Historical replay reports | Decision match + pit-lap MAE | — |
+| **6 — Reasons Over Sims** | **done** | Choose among option cards + cite sim numbers | Position regret vs oracle | **regret=0; oracle match 100%; faith≈99%; pit-next baseline regret≈5.5** (80 pts) |
+| 7 — Evaluation Harness | next | Historical replay reports | Decision match + pit-lap MAE | — |
 
 ### Phase 0 — how to run
 
@@ -111,7 +112,16 @@ race-engineer/.venv/bin/python race-engineer/scripts/simulate_once.py --year 202
 race-engineer/.venv/bin/python race-engineer/scripts/eval_sim.py --samples 80
 ```
 
-Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json).
+### Phase 6 — how to run
+
+Sim-conditioned pit/stay (pick an option card, cite sim numbers):
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/decide_once_sim.py --backend heuristic_sim --year 2024 --name-contains British --driver-id 1 --lap 22
+race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
+```
+
+Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json).
 
 Code: [`race-engineer/`](race-engineer/).
 
