@@ -32,6 +32,12 @@ class TestSimAgent(unittest.TestCase):
         self.assertEqual(option_to_action("stay_to_finish"), "stay")
         self.assertEqual(option_to_action("stay_3_then_pit"), "stay")
 
+    def test_option_to_tyre(self):
+        from race_engineer.sim_agent import option_to_tyre
+
+        self.assertEqual(option_to_tyre("pit_next_lap", current_compound="MEDIUM"), "hard")
+        self.assertEqual(option_to_tyre("stay_3_then_pit"), None)
+
     def test_position_regret(self):
         self.assertAlmostEqual(position_regret(4.0, 2.0), 2.0)
         self.assertAlmostEqual(position_regret(1.0, 1.0), 0.0)

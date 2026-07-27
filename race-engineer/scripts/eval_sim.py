@@ -85,10 +85,21 @@ def main() -> None:
             n_rolls=args.n_rolls,
             seed=args.seed + i,
         )
-        # Use stay_to_finish card if present, else oracle — calibration of
-        # "current trajectory" probs vs actual finish.
         stay = next((c for c in cards if c.label == "stay_to_finish"), None)
-        card = stay if stay is not None else oracle_best(cards)
+        if stay is not None:
+            card = stay
+            card_name = "stay_to_finish"
+        else:
+            # Mandatory pit pending: use longest legal stay-then-pit trajectory.
+            stay_opts = [
+                c for c in cards if c.label.startswith("stay_") and c.label.endswith("_then_pit")
+            ]
+            if stay_opts:
+                card = max(stay_opts, key=lambda c: c.pit_after_laps)
+                card_name = card.label
+            else:
+                card = oracle_best(cards)
+                card_name = card.label
         probs3.append(card.p_finish_le_3)
         probs5.append(card.p_finish_le_5)
         probs10.append(card.p_finish_le_10)
@@ -102,7 +113,7 @@ def main() -> None:
                 "driver_id": pt.driver_id,
                 "lap": pt.lap,
                 "actual_finish": actual,
-                "card": card.label,
+                "card": card_name,
                 "mean_finish_pos": card.mean_finish_pos,
                 "P_le_3": card.p_finish_le_3,
                 "P_le_5": card.p_finish_le_5,
@@ -117,7 +128,7 @@ def main() -> None:
         "n_points": len(rows),
         "n_rolls": args.n_rolls,
         "seed": args.seed,
-        "calibration_card": "stay_to_finish_preferred",
+        "calibration_card": "stay_to_finish_if_legal_else_longest_stay_then_pit",
         "brier": {
             "finish_le_3": round(brier_binary(probs3, y3), 4) if probs3 else None,
             "finish_le_5": round(brier_binary(probs5, y5), 4) if probs5 else None,
@@ -127,8 +138,9 @@ def main() -> None:
             round(float(sum(mean_pos_err) / len(mean_pos_err)), 3) if mean_pos_err else None
         ),
         "note": (
-            "v0 static-rival field; Brier on stay-to-finish trajectory probs "
-            "vs actual finishing position. Lower Brier is better (0=perfect)."
+            "v0 static-rival field; dry-race pit constraints applied in sim. "
+            "Brier on stay-to-finish when legal, else longest stay-then-pit "
+            "trajectory vs actual finish. Lower Brier is better (0=perfect)."
         ),
     }
     out = args.out_dir

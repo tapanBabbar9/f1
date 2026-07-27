@@ -9,6 +9,7 @@ from typing import Any
 
 from race_engineer.crew_chief import CrewChiefDecision, build_user_prompt, parse_decision
 from race_engineer.faithfulness import faithfulness_score
+from race_engineer.racing_rules import DRY_MANDATORY_PIT_RULES, mandatory_dry_pit_pending
 from race_engineer.replay import RaceReplay
 from race_engineer.sim import OptionCard, oracle_best
 from race_engineer.state import RaceState
@@ -36,17 +37,25 @@ Rules:
 - Cite at least one sim number (mean_finish_pos or P_finish_le_*).
 - Do not name drivers, teams, or race events.
 - The feed withholds race/year/driver; circuit is kept for pit-loss context.
-"""
+
+""" + DRY_MANDATORY_PIT_RULES
 
 
 def option_to_action(label: str) -> str:
     return "pit" if label == "pit_next_lap" else "stay"
 
 
-def option_to_tyre(label: str) -> str | None:
-    if label == "pit_next_lap":
+def option_to_tyre(label: str, *, current_compound: str | None = None) -> str | None:
+    if label != "pit_next_lap":
+        return None
+    cur = (current_compound or "UNKNOWN").strip().upper()
+    if cur == "MEDIUM":
         return "hard"
-    return None
+    if cur == "HARD":
+        return "medium"
+    if cur == "SOFT":
+        return "hard"
+    return "hard"
 
 
 def find_option(
@@ -97,9 +106,10 @@ class SimAgentDecision:
     regret: float
     tool_results: list[ToolResult] = field(default_factory=list)
     faithfulness: dict[str, Any] = field(default_factory=dict)
+    trajectory: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             **self.decision.to_dict(),
             "chosen_option_id": self.chosen_option_id,
             "chosen_label": self.chosen_label,
@@ -111,6 +121,9 @@ class SimAgentDecision:
             "tools_used": [t.name for t in self.tool_results],
             "faithfulness": self.faithfulness,
         }
+        if self.trajectory is not None:
+            out["trajectory"] = self.trajectory
+        return out
 
 
 def _cards_from_payload(sim: dict[str, Any]) -> list[OptionCard]:
@@ -142,6 +155,8 @@ def build_sim_decision_from_choice(
     push: str = "med",
     tool_results: list[ToolResult],
     rationale: str | None = None,
+    trajectory: dict[str, Any] | None = None,
+    current_compound: str | None = None,
 ) -> SimAgentDecision:
     if not sim.get("available"):
         raise RuntimeError(f"simulate_strategies unavailable: {sim}")
@@ -163,7 +178,7 @@ def build_sim_decision_from_choice(
 
     label = str(chosen["label"])
     action = option_to_action(label)
-    tyre = option_to_tyre(label)
+    tyre = option_to_tyre(label, current_compound=current_compound)
     c_mean = float(chosen["mean_finish_pos"])
     o_mean = float(oracle["mean_finish_pos"])
     if rationale is None:
@@ -191,6 +206,7 @@ def build_sim_decision_from_choice(
         regret=position_regret(c_mean, o_mean),
         tool_results=tool_results,
         faithfulness=faith,
+        trajectory=trajectory,
     )
 
 
@@ -225,6 +241,7 @@ class HeuristicSimBackend(SimAwareBackend):
             sim=sim,
             chosen_option_id=oid,
             tool_results=results,
+            current_compound=state.tyre_compound,
         )
 
 
@@ -244,7 +261,8 @@ class PitNextSimBaseline(SimAwareBackend):
         pit = next((o for o in options if o.get("label") == "pit_next_lap"), None)
         oid = str(pit["option_id"]) if pit else str(sim["oracle_option_id"])
         return build_sim_decision_from_choice(
-            sim=sim, chosen_option_id=oid, tool_results=results
+            sim=sim, chosen_option_id=oid, tool_results=results,
+            current_compound=state.tyre_compound,
         )
 
 
@@ -293,11 +311,13 @@ class OpenAISimBackend(SimAwareBackend):
             {"role": "user", "content": build_user_prompt(state)},
         ]
         last_err: Exception | None = None
-        for _attempt in range(self.max_retries + 1):
+        attempt_logs: list[dict[str, Any]] = []
+
+        for attempt_i in range(self.max_retries + 1):
+            collected: list[ToolResult] = []
+            round_messages = list(messages)
             try:
-                collected: list[ToolResult] = []
-                round_messages = list(messages)
-                for _ in range(self.max_tool_rounds):
+                for round_i in range(self.max_tool_rounds):
                     resp = self._client.chat.completions.create(
                         model=self.model,
                         messages=round_messages,
@@ -309,7 +329,11 @@ class OpenAISimBackend(SimAwareBackend):
                     tool_calls = msg.tool_calls or []
                     if not tool_calls:
                         content = msg.content or ""
+                        round_messages.append(
+                            {"role": "assistant", "content": content}
+                        )
                         decision, oid = parse_sim_decision(content)
+                        forced_sim = False
                         sim_payload = next(
                             (
                                 t.payload
@@ -322,12 +346,33 @@ class OpenAISimBackend(SimAwareBackend):
                             sim_tr = belt.call("simulate_strategies")
                             collected.append(sim_tr)
                             sim_payload = sim_tr.payload
+                            forced_sim = True
+                        trajectory = {
+                            "backend": self.name,
+                            "model": self.model,
+                            "attempts": attempt_logs
+                            + [
+                                {
+                                    "attempt": attempt_i,
+                                    "rounds": round_i + 1,
+                                    "messages": round_messages,
+                                    "tools_called": [t.name for t in collected],
+                                    "tool_payloads": {
+                                        t.name: t.payload for t in collected
+                                    },
+                                    "forced_simulate_strategies": forced_sim,
+                                    "error": None,
+                                }
+                            ],
+                        }
                         return build_sim_decision_from_choice(
                             sim=sim_payload,
                             chosen_option_id=oid,
                             push=decision.push,
                             tool_results=collected,
                             rationale=decision.rationale,
+                            trajectory=trajectory,
+                            current_compound=state.tyre_compound,
                         )
 
                     round_messages.append(
@@ -355,12 +400,22 @@ class OpenAISimBackend(SimAwareBackend):
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
+                                "name": tc.function.name,
                                 "content": tr.to_json(),
                             }
                         )
                 raise RuntimeError("max tool rounds exceeded without decision")
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_i,
+                        "messages": round_messages,
+                        "tools_called": [t.name for t in collected],
+                        "tool_payloads": {t.name: t.payload for t in collected},
+                        "error": str(exc),
+                    }
+                )
                 continue
         raise RuntimeError(f"openai_sim failed: {last_err}")
 

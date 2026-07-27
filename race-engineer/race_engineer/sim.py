@@ -12,6 +12,10 @@ import numpy as np
 
 from race_engineer.lap_deg import LapDegModel
 from race_engineer.pit_baseline import COMPOUND_TO_ID
+from race_engineer.racing_rules import (
+    alternate_dry_compound_id,
+    mandatory_dry_pit_pending,
+)
 from race_engineer.replay import RaceReplay
 from race_engineer.state import RaceState
 
@@ -208,8 +212,14 @@ def _apply_lap(snap: SimSnapshot, lap_ms: float) -> SimSnapshot:
     )
 
 
-def _pit_stop(snap: SimSnapshot, pit_loss_ms: float, new_compound_id: float = 3.0) -> SimSnapshot:
-    """HARD=3 default for second stint if unknown."""
+def _pit_stop(
+    snap: SimSnapshot,
+    pit_loss_ms: float,
+    new_compound_id: float | None = None,
+) -> SimSnapshot:
+    """HARD/MEDIUM alternate default for second stint if unknown."""
+    if new_compound_id is None:
+        new_compound_id = alternate_dry_compound_id(snap.compound_id)
     return SimSnapshot(
         circuit_id=snap.circuit_id,
         lap=snap.lap,
@@ -291,7 +301,11 @@ def finish_position(ego_finish_ms: float, rival_finishes: Sequence[float]) -> in
     return worse + 1
 
 
-def build_default_options(remaining_laps: int) -> list[StrategyOption]:
+def build_default_options(
+    remaining_laps: int,
+    *,
+    mandatory_pit_pending: bool = False,
+) -> list[StrategyOption]:
     opts: list[StrategyOption] = []
     for n in DEFAULT_STAY_NS:
         if n == 0:
@@ -306,8 +320,8 @@ def build_default_options(remaining_laps: int) -> list[StrategyOption]:
                     f"stay_{n}_then_pit",
                 )
             )
-    # Always include stay-to-flag if not already covered.
-    if remaining_laps > 0:
+    # Stay-to-flag only legal once mandatory dry pit is satisfied.
+    if remaining_laps > 0 and not mandatory_pit_pending:
         opts.append(
             StrategyOption(
                 chr(ord("A") + len(opts)),
@@ -351,7 +365,15 @@ def simulate_strategy_cards(
     pace = build_pace_schedule(deg, snap0)
     rivals = rival_finish_times_ms(replay, state)
     remaining = max(0, state.total_laps - state.lap)
-    opts = list(options) if options is not None else build_default_options(remaining)
+    must_pit = mandatory_dry_pit_pending(state)
+    if options is not None:
+        opts = list(options)
+        if must_pit:
+            opts = [o for o in opts if o.pit_after_laps <= remaining]
+    else:
+        opts = build_default_options(remaining, mandatory_pit_pending=must_pit)
+    if not opts:
+        raise ValueError("no legal strategy options after dry-race pit constraints")
     rng = np.random.default_rng(seed)
 
     cards: list[OptionCard] = []

@@ -13,6 +13,7 @@ from race_engineer.crew_chief import (
 )
 from race_engineer.faithfulness import faithfulness_score
 from race_engineer.llm import HeuristicBackend
+from race_engineer.racing_rules import DRY_MANDATORY_PIT_RULES
 from race_engineer.replay import RaceReplay
 from race_engineer.state import RaceState
 from race_engineer.tools import OPENAI_TOOL_SCHEMAS, ToolBelt, ToolResult
@@ -38,7 +39,8 @@ Rules:
 - If action is "stay", tyre must be null.
 - If action is "pit", tyre must be soft, medium, or hard.
 - Do not name drivers, teams, or race events in the rationale.
-"""
+
+""" + DRY_MANDATORY_PIT_RULES
 
 
 @dataclass

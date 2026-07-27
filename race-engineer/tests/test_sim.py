@@ -29,7 +29,7 @@ class TestSim(unittest.TestCase):
         cls.state = cls.replay.get_state(1132, 1, 22)  # HAM British 2024 L22
 
     def test_build_default_options(self):
-        opts = build_default_options(30)
+        opts = build_default_options(30, mandatory_pit_pending=False)
         labels = [o.label for o in opts]
         self.assertIn("pit_next_lap", labels)
         self.assertIn("stay_to_finish", labels)
@@ -46,6 +46,8 @@ class TestSim(unittest.TestCase):
             self.replay, self.state, n_rolls=8, seed=0, noise_ms=0.0
         )
         self.assertGreaterEqual(len(cards), 2)
+        labels = [c.label for c in cards]
+        self.assertNotIn("stay_to_finish", labels)
         best = oracle_best(cards)
         self.assertIn(best, cards)
         for c in cards:

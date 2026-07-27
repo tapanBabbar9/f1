@@ -237,6 +237,7 @@ class ToolBelt:
 
     def simulate_strategies(self) -> dict[str, Any]:
         """Phase 5 option cards: pit-next vs stay-N Monte Carlo."""
+        from race_engineer.racing_rules import mandatory_dry_pit_pending
         from race_engineer.sim import oracle_best, simulate_strategy_cards
 
         try:
@@ -245,13 +246,20 @@ class ToolBelt:
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "error": str(exc)}
         best = oracle_best(cards)
+        must_pit = mandatory_dry_pit_pending(self.state)
         return {
             "available": True,
             "n_options": len(cards),
+            "mandatory_dry_pit_pending": must_pit,
             "oracle_option_id": best.option_id,
             "oracle_label": best.label,
             "oracle_mean_finish_pos": round(best.mean_finish_pos, 3),
             "options": [c.to_dict() for c in cards],
+            "note": (
+                "stay_to_finish omitted while mandatory dry pit pending (pit_stops=0)"
+                if must_pit
+                else None
+            ),
         }
 
     def call_all(self) -> list[ToolResult]:

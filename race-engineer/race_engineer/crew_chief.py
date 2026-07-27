@@ -5,6 +5,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from race_engineer.racing_rules import DRY_MANDATORY_PIT_RULES
 from race_engineer.state import RaceState
 
 Action = Literal["pit", "stay"]
@@ -31,7 +32,8 @@ Rules:
 - If action is "pit", tyre must be soft, medium, or hard (recommended compound for the stop).
 - Keep rationale to 1-3 sentences. Do not invent numbers that are not in the race state.
 - Do not name drivers, teams, or race events in the rationale.
-"""
+
+""" + DRY_MANDATORY_PIT_RULES
 
 
 @dataclass(frozen=True)
