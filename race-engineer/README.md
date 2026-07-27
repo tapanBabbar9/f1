@@ -16,6 +16,7 @@ race-engineer/
     lap_deg.py           # Phase 4 next-lap pace
     sim.py               # Phase 5 Monte Carlo option cards
     sim_agent.py         # Phase 6 reasons over sims
+    memory.py            # Phase 7 lap-to-lap pit-wall memory
     racing_rules.py      # v0 dry-race mandatory pit (prompt + sim filter)
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
@@ -25,6 +26,7 @@ race-engineer/
     train_lap_deg.py / predict_lap_deg.py
     simulate_once.py / eval_sim.py
     decide_once_sim.py / eval_sim_agent.py
+    replay_race.py / eval_memory.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
@@ -32,6 +34,7 @@ race-engineer/
     lap_deg/metrics.json
     sim/metrics.json
     sim_agent/metrics.json
+    memory/metrics.json
     eval/frozen_races.json
   requirements.txt
 ```
@@ -243,3 +246,14 @@ race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend
 ```
 
 Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, oracle match **100%**, faith **≈0.994** (80 pts).
+
+## Phase 7 — memory across laps
+
+**What it does:** persist pit-wall instructions keyed by `(race, driver)` each lap; inject prior plan into the Phase 6 user prompt; support full-race replay (not just single-lap eval samples). Metrics: flip-flop rate (pit/stay reversal without material board/sim change) and regret delta vs memory-off.
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1
+race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend heuristic_sim
+```
+
+Committed scoreboard: `artifacts/memory/metrics.json` — **regret delta=0**, flip-flop rate **0** (20 race-drivers, 1087 laps; heuristic_sim).

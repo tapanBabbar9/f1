@@ -7,8 +7,17 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from race_engineer.crew_chief import CrewChiefDecision, build_user_prompt, parse_decision
+from race_engineer.crew_chief import (
+    CrewChiefDecision,
+    RADIO_STYLE_GUIDE,
+    build_user_prompt,
+    compose_driver_message,
+    compose_reason,
+    finalize_decision,
+    parse_decision,
+)
 from race_engineer.faithfulness import faithfulness_score
+from race_engineer.memory import RaceMemoryStore
 from race_engineer.racing_rules import DRY_MANDATORY_PIT_RULES, mandatory_dry_pit_pending
 from race_engineer.replay import RaceReplay
 from race_engineer.sim import OptionCard, oracle_best
@@ -26,6 +35,8 @@ Reply with ONLY a JSON object (no markdown):
   "action": "pit" | "stay",
   "tyre": "soft" | "medium" | "hard" | null,
   "push": "low" | "med" | "high",
+  "reason": "<one line, ≤100 chars>",
+  "driver_message": "<radio to driver, ≤120 chars>",
   "chosen_option_id": "<option_id from simulate_strategies, e.g. A>",
   "rationale": "<1-3 sentences citing option E_finish / P_finish numbers>"
 }
@@ -38,7 +49,53 @@ Rules:
 - Do not name drivers, teams, or race events.
 - The feed withholds race/year/driver; circuit is kept for pit-loss context.
 
-""" + DRY_MANDATORY_PIT_RULES
+""" + RADIO_STYLE_GUIDE + "\n" + DRY_MANDATORY_PIT_RULES
+
+MEMORY_PROMPT_NOTE = """
+When pit-wall memory is present, treat it as your prior plan. Revise only when
+gaps, position, safety car, compound, or sim option rankings materially change.
+"""
+
+
+def build_sim_user_prompt(
+    state: RaceState, memory: RaceMemoryStore | None = None
+) -> str:
+    base = build_user_prompt(state)
+    if memory is None:
+        return base
+    block = memory.format_prompt_block(
+        state.race_id, state.driver_id, before_lap=state.lap
+    )
+    if not block:
+        return base
+    return f"{base}\n\n{block}\n{MEMORY_PROMPT_NOTE.strip()}"
+
+
+def _sim_payload_from_results(tool_results: list[ToolResult]) -> dict[str, Any] | None:
+    for tr in reversed(tool_results):
+        if tr.name == "simulate_strategies":
+            return tr.payload
+    return None
+
+
+def _record_sim_decision(
+    state: RaceState,
+    sd: SimAgentDecision,
+    memory: RaceMemoryStore | None,
+    sim: dict[str, Any] | None,
+) -> SimAgentDecision:
+    if memory is not None:
+        memory.record_sim_decision(
+            state,
+            action=sd.decision.action,
+            chosen_option_id=sd.chosen_option_id,
+            chosen_label=sd.chosen_label,
+            oracle_option_id=sd.oracle_option_id,
+            rationale=sd.decision.rationale,
+            sim=sim,
+            mean_finish_pos=sd.chosen_mean_finish_pos,
+        )
+    return sd
 
 
 def option_to_action(label: str) -> str:
@@ -72,13 +129,15 @@ def position_regret(chosen_mean: float, oracle_mean: float) -> float:
     return float(chosen_mean - oracle_mean)
 
 
-def parse_sim_decision(raw: str | dict[str, Any]) -> tuple[CrewChiefDecision, str]:
+def parse_sim_decision(
+    raw: str | dict[str, Any], *, state: RaceState | None = None
+) -> tuple[CrewChiefDecision, str]:
     """Parse crew-chief JSON plus required chosen_option_id."""
     if isinstance(raw, dict):
-        decision = parse_decision(json.dumps(raw))
+        decision = parse_decision(json.dumps(raw), state=state)
         payload = raw
     else:
-        decision = parse_decision(raw)
+        decision = parse_decision(raw, state=state)
         text = raw.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -155,8 +214,11 @@ def build_sim_decision_from_choice(
     push: str = "med",
     tool_results: list[ToolResult],
     rationale: str | None = None,
+    reason: str | None = None,
+    driver_message: str | None = None,
     trajectory: dict[str, Any] | None = None,
     current_compound: str | None = None,
+    state: RaceState | None = None,
 ) -> SimAgentDecision:
     if not sim.get("available"):
         raise RuntimeError(f"simulate_strategies unavailable: {sim}")
@@ -188,12 +250,25 @@ def build_sim_decision_from_choice(
             f"mean_finish_pos={c_mean}; P_finish_le_3={p3}; "
             f"oracle={oracle_id} mean_finish_pos={o_mean}."
         )
-    decision = CrewChiefDecision(
+    draft = CrewChiefDecision(
         action=action,  # type: ignore[arg-type]
         tyre=tyre,  # type: ignore[arg-type]
         push=push,  # type: ignore[arg-type]
+        reason=reason or compose_reason(
+            action=action,  # type: ignore[arg-type]
+            tyre=tyre,
+            push=push,  # type: ignore[arg-type]
+            rationale=rationale,
+        ),
+        driver_message=driver_message or compose_driver_message(
+            state,
+            action=action,  # type: ignore[arg-type]
+            tyre=tyre,
+            push=push,  # type: ignore[arg-type]
+        ),
         rationale=rationale,
     )
+    decision = finalize_decision(state, draft)
     faith = faithfulness_score(decision.rationale, tool_results)
     return SimAgentDecision(
         decision=decision,
@@ -214,7 +289,12 @@ class SimAwareBackend:
     name: str
     replay: RaceReplay
 
-    def decide_with_sims(self, state: RaceState) -> SimAgentDecision: ...
+    def decide_with_sims(
+        self,
+        state: RaceState,
+        *,
+        memory: RaceMemoryStore | None = None,
+    ) -> SimAgentDecision: ...
 
 
 class HeuristicSimBackend(SimAwareBackend):
@@ -228,7 +308,12 @@ class HeuristicSimBackend(SimAwareBackend):
     def __init__(self, replay: RaceReplay):
         self.replay = replay
 
-    def decide_with_sims(self, state: RaceState) -> SimAgentDecision:
+    def decide_with_sims(
+        self,
+        state: RaceState,
+        *,
+        memory: RaceMemoryStore | None = None,
+    ) -> SimAgentDecision:
         belt = ToolBelt(self.replay, state)
         results = [
             belt.call("get_gaps"),
@@ -237,12 +322,14 @@ class HeuristicSimBackend(SimAwareBackend):
         ]
         sim = results[-1].payload
         oid = str(sim["oracle_option_id"])
-        return build_sim_decision_from_choice(
+        sd = build_sim_decision_from_choice(
             sim=sim,
             chosen_option_id=oid,
             tool_results=results,
             current_compound=state.tyre_compound,
+            state=state,
         )
+        return _record_sim_decision(state, sd, memory, sim)
 
 
 class PitNextSimBaseline(SimAwareBackend):
@@ -253,17 +340,24 @@ class PitNextSimBaseline(SimAwareBackend):
     def __init__(self, replay: RaceReplay):
         self.replay = replay
 
-    def decide_with_sims(self, state: RaceState) -> SimAgentDecision:
+    def decide_with_sims(
+        self,
+        state: RaceState,
+        *,
+        memory: RaceMemoryStore | None = None,
+    ) -> SimAgentDecision:
         belt = ToolBelt(self.replay, state)
         results = [belt.call("simulate_strategies")]
         sim = results[0].payload
         options = sim.get("options") or []
         pit = next((o for o in options if o.get("label") == "pit_next_lap"), None)
         oid = str(pit["option_id"]) if pit else str(sim["oracle_option_id"])
-        return build_sim_decision_from_choice(
+        sd = build_sim_decision_from_choice(
             sim=sim, chosen_option_id=oid, tool_results=results,
             current_compound=state.tyre_compound,
+            state=state,
         )
+        return _record_sim_decision(state, sd, memory, sim)
 
 
 class OpenAISimBackend(SimAwareBackend):
@@ -304,11 +398,16 @@ class OpenAISimBackend(SimAwareBackend):
         self.max_tool_rounds = max_tool_rounds
         self.max_retries = max_retries
 
-    def decide_with_sims(self, state: RaceState) -> SimAgentDecision:
+    def decide_with_sims(
+        self,
+        state: RaceState,
+        *,
+        memory: RaceMemoryStore | None = None,
+    ) -> SimAgentDecision:
         belt = ToolBelt(self.replay, state)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SIM_SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(state)},
+            {"role": "user", "content": build_sim_user_prompt(state, memory)},
         ]
         last_err: Exception | None = None
         attempt_logs: list[dict[str, Any]] = []
@@ -332,7 +431,7 @@ class OpenAISimBackend(SimAwareBackend):
                         round_messages.append(
                             {"role": "assistant", "content": content}
                         )
-                        decision, oid = parse_sim_decision(content)
+                        decision, oid = parse_sim_decision(content, state=state)
                         forced_sim = False
                         sim_payload = next(
                             (
@@ -365,14 +464,20 @@ class OpenAISimBackend(SimAwareBackend):
                                 }
                             ],
                         }
-                        return build_sim_decision_from_choice(
+                        sd = build_sim_decision_from_choice(
                             sim=sim_payload,
                             chosen_option_id=oid,
                             push=decision.push,
                             tool_results=collected,
                             rationale=decision.rationale,
+                            reason=decision.reason,
+                            driver_message=decision.driver_message,
                             trajectory=trajectory,
                             current_compound=state.tyre_compound,
+                            state=state,
+                        )
+                        return _record_sim_decision(
+                            state, sd, memory, sim_payload
                         )
 
                     round_messages.append(
@@ -418,6 +523,60 @@ class OpenAISimBackend(SimAwareBackend):
                 )
                 continue
         raise RuntimeError(f"openai_sim failed: {last_err}")
+
+
+@dataclass
+class RaceReplayResult:
+    race_id: int
+    driver_id: int
+    laps: list[int]
+    decisions: list[SimAgentDecision]
+    memory: RaceMemoryStore | None = None
+
+    @property
+    def mean_regret(self) -> float | None:
+        if not self.decisions:
+            return None
+        return sum(d.regret for d in self.decisions) / len(self.decisions)
+
+    def flip_flop_rate(self) -> float | None:
+        if self.memory is None:
+            return None
+        return self.memory.flip_flop_rate(self.race_id, self.driver_id)
+
+
+def replay_race_decisions(
+    backend: SimAwareBackend,
+    replay: RaceReplay,
+    race_id: int,
+    driver_id: int,
+    *,
+    memory: RaceMemoryStore | None = None,
+    lap_from: int = 1,
+    lap_to: int | None = None,
+) -> RaceReplayResult:
+    """Full-race (or window) lap-by-lap Phase 6 loop with optional memory."""
+    laps_avail = replay.available_laps(race_id, driver_id)
+    if not laps_avail:
+        raise KeyError(f"No laps for race_id={race_id} driver_id={driver_id}")
+    hi = lap_to if lap_to is not None else laps_avail[-1]
+    lap_range = [L for L in laps_avail if lap_from <= L <= hi]
+    store = memory if memory is not None else RaceMemoryStore()
+    use_memory = memory is not None
+    decisions: list[SimAgentDecision] = []
+    for lap in lap_range:
+        state = replay.get_state(race_id, driver_id, lap)
+        sd = backend.decide_with_sims(
+            state, memory=store if use_memory else None
+        )
+        decisions.append(sd)
+    return RaceReplayResult(
+        race_id=race_id,
+        driver_id=driver_id,
+        laps=lap_range,
+        decisions=decisions,
+        memory=store if use_memory else None,
+    )
 
 
 def get_sim_backend(name: str, replay: RaceReplay) -> SimAwareBackend:

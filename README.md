@@ -42,7 +42,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 | **4 — Lap Degradation** | **done** | Next-lap pace tool (`predict_lap_time`) | MAE / MAPE | **test MAE≈1.79s, MAPE≈1.77%** (2024–25) |
 | **5 — Simulation** | **done** | Monte Carlo pit-now vs stay-N option cards | Finish-position Brier | **Brier P(≤3/5/10)≈0.09/0.17/0.12; MAE≈2.1 pos** (80 pts) |
 | **6 — Reasons Over Sims** | **done** | Choose among option cards + cite sim numbers; dry-race pit rules in prompt + sim | Position regret vs oracle | **regret=0; oracle match 100%; faith≈99%** (80 pts) |
-| 7 — Memory Across Laps | next | Persist pit-wall plan lap-to-lap for full-race replay | Flip-flop / contradiction rate | — |
+| **7 — Memory Across Laps** | **done** | Pit-wall memory store + full-race replay wired into Phase 6 | Flip-flop rate + regret delta vs memory-off | **regret delta=0; flip-flop=0** (1087 laps, heuristic_sim) |
+| 8 — Evaluation Harness | next | Full-race replay reports + model scoreboard | Decision match + pit-lap MAE | — |
 
 ### Phase 0 — how to run
 
@@ -123,7 +124,16 @@ race-engineer/.venv/bin/python race-engineer/scripts/decide_once_sim.py --backen
 race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
 ```
 
-Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json).
+### Phase 7 — how to run
+
+Full-race lap-by-lap replay with pit-wall memory surfaced in the Phase 6 prompt:
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1
+race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend heuristic_sim
+```
+
+Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](race-engineer/artifacts/memory/metrics.json).
 
 Code: [`race-engineer/`](race-engineer/).
 

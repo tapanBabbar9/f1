@@ -183,6 +183,8 @@ def main() -> None:
             "action",
             "tyre",
             "push",
+            "reason",
+            "driver_message",
             "rationale",
             "schema_valid",
         ]

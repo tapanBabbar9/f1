@@ -1,0 +1,195 @@
+{
+  "phase": 7,
+  "backend": "heuristic_sim",
+  "n_race_drivers": 20,
+  "n_laps": 1087,
+  "lap_from": 1,
+  "lap_to": null,
+  "mean_position_regret_memory_off": 0.0,
+  "mean_position_regret_memory_on": 0.0,
+  "mean_regret_delta_on_minus_off": 0.0,
+  "mean_flip_flop_rate": 0.0,
+  "note": "Full-race replay per frozen (race, driver). Flip-flop = consecutive laps where pit/stay flipped but evidence fingerprint unchanged (position/gap buckets, compound, pit count, SC, sim oracle). heuristic_sim follows oracle each lap \u2014 expect ~0 regret delta and low flip-flops unless the board is static while oracle action toggles.",
+  "by_race_driver": [
+    {
+      "race_id": 1052,
+      "driver_id": 1,
+      "n_laps": 56,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1052,
+      "driver_id": 832,
+      "n_laps": 56,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1056,
+      "driver_id": 830,
+      "n_laps": 78,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1056,
+      "driver_id": 840,
+      "n_laps": 77,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1061,
+      "driver_id": 1,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1061,
+      "driver_id": 840,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1063,
+      "driver_id": 830,
+      "n_laps": 1,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": null
+    },
+    {
+      "race_id": 1063,
+      "driver_id": 844,
+      "n_laps": 1,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": null
+    },
+    {
+      "race_id": 1073,
+      "driver_id": 830,
+      "n_laps": 58,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1073,
+      "driver_id": 4,
+      "n_laps": 58,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1080,
+      "driver_id": 815,
+      "n_laps": 64,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1080,
+      "driver_id": 1,
+      "n_laps": 64,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1083,
+      "driver_id": 832,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1083,
+      "driver_id": 854,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1089,
+      "driver_id": 830,
+      "n_laps": 53,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1089,
+      "driver_id": 842,
+      "n_laps": 53,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1104,
+      "driver_id": 830,
+      "n_laps": 78,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1104,
+      "driver_id": 832,
+      "n_laps": 78,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1108,
+      "driver_id": 830,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    },
+    {
+      "race_id": 1108,
+      "driver_id": 848,
+      "n_laps": 52,
+      "mean_regret_off": 0.0,
+      "mean_regret_on": 0.0,
+      "regret_delta": 0.0,
+      "flip_flop_rate": 0.0
+    }
+  ]
+}

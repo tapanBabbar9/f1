@@ -9,6 +9,9 @@ from race_engineer.crew_chief import (
     SYSTEM_PROMPT,
     CrewChiefDecision,
     build_user_prompt,
+    compose_driver_message,
+    compose_reason,
+    finalize_decision,
     parse_decision,
 )
 from race_engineer.state import RaceState
@@ -75,12 +78,27 @@ class HeuristicBackend:
             else:
                 push = "med"
 
-        return CrewChiefDecision(
-            action="pit" if pit else "stay",
+        rationale = "; ".join(reasons) + "."
+        action = "pit" if pit else "stay"
+        draft = CrewChiefDecision(
+            action=action,  # type: ignore[arg-type]
             tyre=tyre,  # type: ignore[arg-type]
             push=push,  # type: ignore[arg-type]
-            rationale="; ".join(reasons) + ".",
+            reason=compose_reason(
+                action=action,  # type: ignore[arg-type]
+                tyre=tyre,
+                push=push,  # type: ignore[arg-type]
+                rationale=rationale,
+            ),
+            driver_message=compose_driver_message(
+                state,
+                action=action,  # type: ignore[arg-type]
+                tyre=tyre,
+                push=push,  # type: ignore[arg-type]
+            ),
+            rationale=rationale,
         )
+        return finalize_decision(state, draft)
 
 
 class OpenAIBackend:
@@ -130,7 +148,7 @@ class OpenAIBackend:
                     temperature=0.2,
                 )
                 raw = resp.choices[0].message.content or ""
-                return parse_decision(raw)
+                return parse_decision(raw, state=state)
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 messages.append(

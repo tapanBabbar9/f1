@@ -9,6 +9,7 @@ from typing import Any
 
 from race_engineer.crew_chief import (
     CrewChiefDecision,
+    RADIO_STYLE_GUIDE,
     parse_decision,
 )
 from race_engineer.faithfulness import faithfulness_score
@@ -32,15 +33,17 @@ After tools, reply with ONLY a JSON object (no markdown):
   "action": "pit" | "stay",
   "tyre": "soft" | "medium" | "hard" | null,
   "push": "low" | "med" | "high",
+  "reason": "<one line, ≤100 chars>",
+  "driver_message": "<radio to driver, ≤120 chars>",
   "rationale": "<1-3 sentences citing tool numbers>"
 }
 
 Rules:
 - If action is "stay", tyre must be null.
 - If action is "pit", tyre must be soft, medium, or hard.
-- Do not name drivers, teams, or race events in the rationale.
+- Do not name drivers, teams, or race events.
 
-""" + DRY_MANDATORY_PIT_RULES
+""" + RADIO_STYLE_GUIDE + "\n" + DRY_MANDATORY_PIT_RULES
 
 
 @dataclass
@@ -120,6 +123,8 @@ class HeuristicToolBackend(ToolAwareBackend):
             action=base.action,
             tyre=base.tyre,
             push=base.push,
+            reason=base.reason,
+            driver_message=base.driver_message,
             rationale=rationale,
         )
         faith = faithfulness_score(decision.rationale, results)
@@ -230,7 +235,7 @@ class OpenAIToolBackend(ToolAwareBackend):
                     temperature=0.2,
                 )
                 raw = resp.choices[0].message.content or ""
-                decision = parse_decision(raw)
+                decision = parse_decision(raw, state=state)
                 break
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
