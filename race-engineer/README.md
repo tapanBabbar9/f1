@@ -16,6 +16,7 @@ race-engineer/
     lap_deg.py           # Phase 4 next-lap pace
     sim.py               # Phase 5 Monte Carlo option cards
     sim_agent.py         # Phase 6 reasons over sims
+    racing_rules.py      # v0 dry-race mandatory pit (prompt + sim filter)
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
     build_tyre_laps.py / train_pit_baseline.py / eval_pit_baseline.py
@@ -221,6 +222,8 @@ Committed scoreboard: `artifacts/lap_deg/metrics.json`.
 
 **What it does:** roll the race forward under pit-next vs stay-N options (lap deg + pit loss + pace noise). Returns Monte Carlo cards with mean finish position and `P(finish ≤ 3/5/10)`. Exposed as tool `simulate_strategies`.
 
+When `pit_stops so far = 0` on a dry compound, **`stay_to_finish` is omitted** from the option menu (mandatory pit still owed).
+
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
 race-engineer/.venv/bin/python race-engineer/scripts/eval_sim.py --samples 80
@@ -230,11 +233,13 @@ Committed scoreboard: `artifacts/sim/metrics.json` — **Brier P(finish≤3/5/10
 
 ## Phase 6 — reasons over sims
 
-**What it does:** call `simulate_strategies`, pick an option card, map to pit/stay for the next lap, and cite sim numbers (`mean_finish_pos`, `P_finish_le_*`). Offline `heuristic_sim` follows the oracle card (zero regret by construction); `pit_next_sim` always boxes next as a contrast baseline.
+**What it does:** call `simulate_strategies`, pick an option card, map to pit/stay for the **next lap**, and cite sim numbers. Offline `heuristic_sim` follows the oracle card; `pit_next_sim` always boxes next as a contrast baseline.
+
+**Dry-race sporting (v0):** shared rules in `racing_rules.py` — appended to Phases 2–6 LLM prompts; sim drops illegal no-pit plans and switches compound on pit. Example: British L22 with 0 stops → oracle moves from illegal `stay_to_finish` to `stay_8_then_pit` (still **stay** next lap, but plan includes a stop).
 
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/decide_once_sim.py --backend heuristic_sim --year 2024 --name-contains British --driver-id 1 --lap 22
 race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
 ```
 
-Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, oracle match **100%**, faith **≈0.994**; pit-next baseline regret **≈5.50** (80 pts).
+Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, oracle match **100%**, faith **≈0.994** (80 pts).
