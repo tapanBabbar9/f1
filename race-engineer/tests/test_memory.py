@@ -50,6 +50,57 @@ class TestMemory(unittest.TestCase):
         self.assertIn("stay_8_then_pit", block)
         self.assertIn("L22", block)
 
+    def test_memory_reconcile_advised_pit_driver_stayed_out(self):
+        store = RaceMemoryStore()
+        s3 = self.replay.get_state(1132, 1, 3)
+        store.record_sim_decision(
+            s3,
+            action="pit",
+            chosen_option_id="A",
+            chosen_label="pit_next_lap",
+            oracle_option_id="A",
+            rationale="Tyres at cliff.",
+            sim={"available": True, "oracle_option_id": "A"},
+        )
+        pit_laps = self.replay.pit_laps(1132, 1)
+        line = store.entries(1132, 1)[0].prompt_line(pit_laps=pit_laps)
+        if 4 in pit_laps:
+            self.assertIn("executed lap 4", line)
+        else:
+            self.assertIn("advised box lap 4; driver stayed out", line)
+
+    def test_memory_reconcile_advised_pit_executed(self):
+        store = RaceMemoryStore()
+        s3 = self.replay.get_state(1132, 1, 3)
+        store.record_sim_decision(
+            s3,
+            action="pit",
+            chosen_option_id="A",
+            chosen_label="pit_next_lap",
+            oracle_option_id="A",
+            rationale="Box now.",
+            sim={"available": True, "oracle_option_id": "A"},
+        )
+        line = store.entries(1132, 1)[0].prompt_line(pit_laps=frozenset({4}))
+        self.assertIn("pit (executed lap 4)", line)
+        self.assertIn("pit_next_lap", line)
+
+    def test_memory_reconcile_without_pit_laps_keeps_raw_advice(self):
+        store = RaceMemoryStore()
+        s3 = self.replay.get_state(1132, 1, 3)
+        store.record_sim_decision(
+            s3,
+            action="pit",
+            chosen_option_id="A",
+            chosen_label="pit_next_lap",
+            oracle_option_id="A",
+            rationale="Box now.",
+            sim={"available": True, "oracle_option_id": "A"},
+        )
+        line = store.entries(1132, 1)[0].prompt_line()
+        self.assertIn("L3: pit", line)
+        self.assertNotIn("driver stayed out", line)
+
     def test_flip_flop_detection(self):
         store = RaceMemoryStore()
         base = dict(
@@ -79,6 +130,53 @@ class TestMemory(unittest.TestCase):
         store._entries[(1132, 1)][1].evidence = ev
         flips = store.flip_flops(1132, 1)
         self.assertEqual(len(flips), 1)
+
+    def test_flip_flop_excludes_advisory_mismatch(self):
+        store = RaceMemoryStore()
+        sim = {"available": True, "oracle_option_id": "B"}
+        ev = evidence_fingerprint(self.state, sim)
+        s21 = self.replay.get_state(1132, 1, 21)
+        s22 = self.replay.get_state(1132, 1, 22)
+        s23 = self.replay.get_state(1132, 1, 23)
+        store.record_sim_decision(
+            s21,
+            action="pit",
+            chosen_option_id="A",
+            chosen_label="pit_next_lap",
+            oracle_option_id="B",
+            rationale="box",
+            sim=sim,
+        )
+        store.record_sim_decision(
+            s22,
+            action="stay",
+            chosen_option_id="B",
+            chosen_label="stay_3_then_pit",
+            oracle_option_id="B",
+            rationale="stay",
+            sim=sim,
+        )
+        store.record_sim_decision(
+            s23,
+            action="stay",
+            chosen_option_id="B",
+            chosen_label="stay_3_then_pit",
+            oracle_option_id="B",
+            rationale="stay",
+            sim=sim,
+        )
+        for entry in store._entries[(1132, 1)]:
+            entry.evidence = ev
+        pit_laps = frozenset({999})  # lap 22 not a pit → L21 advisory mismatch
+        self.assertEqual(len(store.flip_flops(1132, 1)), 1)
+        self.assertEqual(
+            len(
+                store.flip_flops(
+                    1132, 1, pit_laps=pit_laps, exclude_advisory_mismatch=True
+                )
+            ),
+            0,
+        )
 
     def test_full_race_replay_memory_on_off(self):
         race_ids = load_frozen_race_ids()[:1]

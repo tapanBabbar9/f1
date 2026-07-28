@@ -136,11 +136,11 @@ race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend he
 
 ### Phase 8 — how to run
 
-Full-race harness on the frozen set with **two leaderboards** (pit-next vs sim-plan timing; see [`race-engineer/README.md`](race-engineer/README.md)):
+Full-race harness on the frozen set with **two leaderboards** (pit-next vs sim-plan timing). **Contract:** historical board + advisory engineer — no counterfactual lap physics if the driver ignores a box call. See [`race-engineer/README.md`](race-engineer/README.md).
 
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/run_harness.py \
-  --models hgb,heuristic_sim,heuristic_crew --tolerance 2
+  --models hgb,heuristic_sim,heuristic_crew,pit_next_sim --tolerance 2
 ```
 
 Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](race-engineer/artifacts/memory/metrics.json), [`eval/metrics.json`](race-engineer/artifacts/eval/metrics.json).

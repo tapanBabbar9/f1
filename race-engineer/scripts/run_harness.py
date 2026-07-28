@@ -45,7 +45,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--models",
-        default="hgb,heuristic_sim,heuristic_crew",
+        default="hgb,heuristic_sim,heuristic_crew,pit_next_sim",
         help="Comma-separated: hgb, heuristic_crew, heuristic_sim, openai_sim, pit_next_sim",
     )
     parser.add_argument(

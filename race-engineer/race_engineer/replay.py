@@ -197,6 +197,11 @@ class RaceReplay:
         self._require_loaded()
         return sorted(self._laps.get(race_id, {}).get(driver_id, {}).keys())
 
+    def pit_laps(self, race_id: int, driver_id: int) -> frozenset[int]:
+        """Historical pit-stop lap numbers for a driver in a race."""
+        self._require_loaded()
+        return frozenset(self._pits.get(race_id, {}).get(driver_id, []))
+
     def _cumulative_times(self, race_id: int, lap: int) -> dict[int, int]:
         """Elapsed race time (ms) for each driver that has completed `lap`."""
         out: dict[int, int] = {}

@@ -10,6 +10,7 @@ from typing import Any
 from race_engineer.crew_chief import (
     CrewChiefDecision,
     RADIO_STYLE_GUIDE,
+    UPCOMING_LAP_DECISION,
     build_user_prompt,
     compose_driver_message,
     compose_reason,
@@ -25,7 +26,7 @@ from race_engineer.state import RaceState
 from race_engineer.tools import OPENAI_TOOL_SCHEMAS, ToolBelt, ToolResult
 
 SIM_SYSTEM_PROMPT = """You are an F1 race engineer on the pit wall.
-Decide whether the driver should pit on the NEXT lap or stay out.
+""" + UPCOMING_LAP_DECISION + """
 
 You MUST call simulate_strategies (and may call other tools). Choose among the
 returned option cards. Prefer lower expected finish position.
@@ -44,7 +45,7 @@ Reply with ONLY a JSON object (no markdown):
 Rules:
 - If action is "stay", tyre must be null.
 - If action is "pit", tyre must be soft, medium, or hard.
-- Map pit_next_lap → action pit; any stay_* option → action stay.
+- Map pit_next_lap → action pit (upcoming lap; radio: "box this lap"); any stay_* option → action stay.
 - Cite at least one sim number (mean_finish_pos or P_finish_le_*).
 - Do not name drivers, teams, or race events.
 - The feed withholds race/year/driver; circuit is kept for pit-loss context.
@@ -52,19 +53,28 @@ Rules:
 """ + RADIO_STYLE_GUIDE + "\n" + DRY_MANDATORY_PIT_RULES
 
 MEMORY_PROMPT_NOTE = """
-When pit-wall memory is present, treat it as your prior plan. Revise only when
-gaps, position, safety car, compound, or sim option rankings materially change.
+When pit-wall memory is present, treat it as your prior advice. Notes like
+"driver stayed out" reflect historical execution, not a retraction of your call.
+Revise only when gaps, position, safety car, compound, or sim option rankings
+materially change.
 """
 
 
 def build_sim_user_prompt(
-    state: RaceState, memory: RaceMemoryStore | None = None
+    state: RaceState,
+    memory: RaceMemoryStore | None = None,
+    *,
+    replay: RaceReplay | None = None,
 ) -> str:
     base = build_user_prompt(state)
     if memory is None:
         return base
+    pit_laps = replay.pit_laps(state.race_id, state.driver_id) if replay else None
     block = memory.format_prompt_block(
-        state.race_id, state.driver_id, before_lap=state.lap
+        state.race_id,
+        state.driver_id,
+        before_lap=state.lap,
+        pit_laps=pit_laps,
     )
     if not block:
         return base
@@ -407,7 +417,10 @@ class OpenAISimBackend(SimAwareBackend):
         belt = ToolBelt(self.replay, state)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SIM_SYSTEM_PROMPT},
-            {"role": "user", "content": build_sim_user_prompt(state, memory)},
+            {
+                "role": "user",
+                "content": build_sim_user_prompt(state, memory, replay=self.replay),
+            },
         ]
         last_err: Exception | None = None
         attempt_logs: list[dict[str, Any]] = []
@@ -539,10 +552,21 @@ class RaceReplayResult:
             return None
         return sum(d.regret for d in self.decisions) / len(self.decisions)
 
-    def flip_flop_rate(self) -> float | None:
+    def flip_flop_rate(
+        self,
+        replay: RaceReplay,
+        *,
+        exclude_advisory_mismatch: bool = False,
+    ) -> float | None:
         if self.memory is None:
             return None
-        return self.memory.flip_flop_rate(self.race_id, self.driver_id)
+        pit_laps = replay.pit_laps(self.race_id, self.driver_id)
+        return self.memory.flip_flop_rate(
+            self.race_id,
+            self.driver_id,
+            pit_laps=pit_laps,
+            exclude_advisory_mismatch=exclude_advisory_mismatch,
+        )
 
 
 def replay_race_decisions(

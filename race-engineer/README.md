@@ -266,21 +266,23 @@ Committed scoreboard: `artifacts/memory/metrics.json` — **regret delta=0**, fl
 
 ## Phase 8 — evaluation harness 1.0.0
 
+**Eval contract:** historical board + advisory engineer (+ pit-wall memory when enabled). The harness does **not** rewrite lap times or gaps if the driver ignores a box call; Monte Carlo sim cards are the only forward model.
+
 **What it does:** full-race replay on the frozen set (10 races × winner + midfield). Models are split into two families with **separate leaderboards** so timing metrics are comparable:
 
 
 | Family       | Models                                  | Timing MAE                                                                            |
 | ------------ | --------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Pit-next** | `hgb`, `heuristic_crew`, `pit_next_sim` | |first box-next-lap stop − actual pit| per stint                                      |
-| **Sim-plan** | `heuristic_sim`, `openai_sim`           | |planned stop from lap before actual pit − actual pit| (uses `stay_N_then_pit` cards) |
+| **Pit-next** | `hgb`, `heuristic_crew`, `pit_next_sim` | \|first box-next-lap stop − actual pit\| per stint                                      |
+| **Sim-plan** | `heuristic_sim`, `openai_sim`           | \|planned stop from lap before actual pit − actual pit\| (uses `stay_N_then_pit` cards) |
 
 
-Shared: **next-lap match** (pit/stay for lap+1 vs history). Sim-only: **mean regret**, **flip-flop rate**.
+**Shared:** `next_lap_match` (pit/stay for lap+1 vs history), `advisory_mismatch_rate` (advised box but driver stayed out). **Sim-only:** mean regret, flip-flop rate (+ clean subsample excluding unexecuted box pairs). **Memory:** on by default for sim-plan models and `pit_next_sim`; off for HGB and heuristic crew (frozen per-lap).
 
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py   # once, for HGB
 race-engineer/.venv/bin/python race-engineer/scripts/run_harness.py \
-  --models hgb,heuristic_sim,heuristic_crew --tolerance 2
+  --models hgb,heuristic_sim,heuristic_crew,pit_next_sim --tolerance 2
 ```
 
 Outputs: `artifacts/eval/metrics.json` (`leaderboard_pit_next`, `leaderboard_sim_plan`, `metric_definitions`), `report.md`, `harness_manifest.json` (schema **eval_harness_v1**).

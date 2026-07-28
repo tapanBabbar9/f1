@@ -97,7 +97,7 @@ def main() -> None:
                 continue
             off_mean = off.mean_regret or 0.0
             on_mean = on.mean_regret or 0.0
-            ff = on.flip_flop_rate()
+            ff = on.flip_flop_rate(replay)
             off_regrets.extend(d.regret for d in off.decisions)
             on_regrets.extend(d.regret for d in on.decisions)
             n_laps += len(off.decisions)

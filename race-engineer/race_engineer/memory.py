@@ -42,7 +42,7 @@ def evidence_fingerprint(
 @dataclass
 class MemoryEntry:
     lap: int
-    action: str
+    action: str  # engineer advice: pit | stay
     chosen_option_id: str
     chosen_label: str
     oracle_option_id: str
@@ -62,16 +62,48 @@ class MemoryEntry:
             "mean_finish_pos": self.mean_finish_pos,
         }
 
-    def one_line(self) -> str:
+    def _option_suffix(self) -> str:
         mf = (
             f", E[finish]={self.mean_finish_pos:.2f}"
             if self.mean_finish_pos is not None
             else ""
         )
         return (
-            f"L{self.lap}: {self.action} (option {self.chosen_option_id}, "
-            f"{self.chosen_label}{mf}) — {self.rationale[:120]}"
+            f"(option {self.chosen_option_id}, "
+            f"{self.chosen_label}{mf})"
         )
+
+    def prompt_line(self, *, pit_laps: frozenset[int] | None = None) -> str:
+        """One line for the LLM memory block.
+
+        When ``pit_laps`` is set, reconcile engineer advice with historical
+        execution on the upcoming lap (lap+1). Trajectory / stored fields keep
+        raw advice only.
+        """
+        meta = self._option_suffix()
+        rationale = self.rationale[:120]
+        upcoming = self.lap + 1
+
+        if pit_laps is None:
+            return f"L{self.lap}: {self.action} {meta} — {rationale}"
+
+        pitted = upcoming in pit_laps
+        if self.action == "pit":
+            if pitted:
+                head = f"L{self.lap}: pit (executed lap {upcoming})"
+            else:
+                head = (
+                    f"L{self.lap}: advised box lap {upcoming}; driver stayed out"
+                )
+        elif self.action == "stay" and pitted:
+            head = f"L{self.lap}: advised stay; driver pitted lap {upcoming}"
+        else:
+            head = f"L{self.lap}: stay"
+
+        return f"{head} {meta} — {rationale}"
+
+    def one_line(self) -> str:
+        return self.prompt_line()
 
 
 @dataclass
@@ -145,35 +177,72 @@ class RaceMemoryStore:
         *,
         before_lap: int,
         max_entries: int = 8,
+        pit_laps: frozenset[int] | None = None,
     ) -> str:
         """Prior pit-wall instructions for the LLM user prompt."""
         prior = self.entries(race_id, driver_id, before_lap=before_lap)
         if not prior:
             return ""
         tail = prior[-max_entries:]
-        lines = [e.one_line() for e in tail]
+        lines = [e.prompt_line(pit_laps=pit_laps) for e in tail]
         return (
-            "Pit-wall memory (your prior instructions this race — stay consistent "
-            "unless the board or sim cards materially change):\n"
+            "Pit-wall memory (your prior advice this race; notes when the driver "
+            "did not follow a box call — stay consistent unless the board or sim "
+            "cards materially change):\n"
             + "\n".join(f"- {ln}" for ln in lines)
         )
 
+    @staticmethod
+    def entry_advisory_mismatch(
+        entry: MemoryEntry, pit_laps: frozenset[int]
+    ) -> bool:
+        """Engineer advised box on lap+1 but history shows the driver stayed out."""
+        return entry.action == "pit" and (entry.lap + 1) not in pit_laps
+
     def flip_flops(
-        self, race_id: int, driver_id: int
+        self,
+        race_id: int,
+        driver_id: int,
+        *,
+        pit_laps: frozenset[int] | None = None,
+        exclude_advisory_mismatch: bool = False,
     ) -> list[tuple[MemoryEntry, MemoryEntry]]:
-        """Consecutive laps where action flipped but evidence fingerprint unchanged."""
+        """Consecutive laps where advised action flipped but evidence unchanged."""
         rows = self.entries(race_id, driver_id)
         out: list[tuple[MemoryEntry, MemoryEntry]] = []
         for prev, cur in zip(rows, rows[1:]):
+            if exclude_advisory_mismatch and pit_laps is not None:
+                if self.entry_advisory_mismatch(prev, pit_laps):
+                    continue
             if prev.action == cur.action:
                 continue
             if prev.evidence == cur.evidence:
                 out.append((prev, cur))
         return out
 
-    def flip_flop_rate(self, race_id: int, driver_id: int) -> float | None:
+    def flip_flop_rate(
+        self,
+        race_id: int,
+        driver_id: int,
+        *,
+        pit_laps: frozenset[int] | None = None,
+        exclude_advisory_mismatch: bool = False,
+    ) -> float | None:
         rows = self.entries(race_id, driver_id)
         if len(rows) < 2:
             return None
-        n_pairs = len(rows) - 1
-        return len(self.flip_flops(race_id, driver_id)) / n_pairs
+        flips = self.flip_flops(
+            race_id,
+            driver_id,
+            pit_laps=pit_laps,
+            exclude_advisory_mismatch=exclude_advisory_mismatch,
+        )
+        eligible = 0
+        for prev, _cur in zip(rows, rows[1:]):
+            if exclude_advisory_mismatch and pit_laps is not None:
+                if self.entry_advisory_mismatch(prev, pit_laps):
+                    continue
+            eligible += 1
+        if eligible == 0:
+            return None
+        return len(flips) / eligible

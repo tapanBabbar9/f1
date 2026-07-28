@@ -12,10 +12,22 @@ Action = Literal["pit", "stay"]
 TyreChoice = Literal["soft", "medium", "hard"] | None
 PushLevel = Literal["low", "med", "high"]
 
+# Pit decision at lap L is post-lap; target is L+1. Radio "box this lap" = that upcoming lap.
+UPCOMING_LAP_DECISION = (
+    "Given the current race state, decide whether the driver should pit on the "
+    "upcoming lap or stay out. The board shows the lap just completed (L); the "
+    "upcoming lap is L+1. On team radio a pit call is \"box this lap\" — that "
+    "is the upcoming lap, not the lap already finished."
+)
+
+UPCOMING_LAP_USER_QUESTION = (
+    'Decide: pit on the upcoming lap (radio: "box this lap"), or stay out?'
+)
+
 # Authentic pit-wall radio patterns (gap, box, push, manage) — no driver names.
 RADIO_STYLE_GUIDE = """
 Radio style for driver_message (≤120 chars, engineer-to-driver):
-- Pit: "Box, box." / "Box this lap, hard." / "Box this lap, medium."
+- Pit: "Box, box." / "Box this lap, hard." / "Box this lap, medium." ("this lap" = upcoming lap, board lap+1).
 - Stay: "Stay out." / "Stay out, push." / "Stay out, gap behind one point six."
 - Gap ahead: "Push, gap ahead eight tenths." / "Gap ahead one point two." / "Push now."
 - Gap behind / undercut: "Stay out, car behind one point six." / "Push, undercut threat."
@@ -31,7 +43,7 @@ Keep messages short, calm, and operational. No driver or team names. No explanat
 """
 
 SYSTEM_PROMPT = """You are an F1 race engineer on the pit wall.
-Given the current race state, decide whether the driver should pit on the NEXT lap or stay out.
+""" + UPCOMING_LAP_DECISION + """
 
 The feed withholds race event, year, and driver identity on purpose. Circuit is kept
 because pit-loss and strategy windows depend on the track. Decide from the board shown;
@@ -114,7 +126,7 @@ def compose_reason(
         return chunk[:100]
     if action == "pit":
         compound = tyre or "medium"
-        return f"Pit next lap on {compound}."
+        return f"Box this lap on {compound}."
     if push == "high":
         return "Stay out and push on pace."
     if push == "low":
@@ -195,7 +207,7 @@ def build_user_prompt(state: RaceState) -> str:
     return (
         "Race state (pit-wall feed):\n\n"
         f"{state.pit_wall_view(anonymize=True)}\n\n"
-        "Decide: pit on the NEXT lap, or stay out?"
+        f"{UPCOMING_LAP_USER_QUESTION}"
     )
 
 

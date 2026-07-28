@@ -33,6 +33,12 @@ HARNESS_VERSION = "1.0.0"
 FROZEN_RACES_ID = "frozen_v1"
 DEFAULT_TOLERANCE_LAPS = 2
 
+EVAL_CONTRACT = (
+    "Historical board + advisory engineer (+ pit-wall memory when enabled). "
+    "Does not rewrite lap times or gaps if the driver ignores a box call; "
+    "Monte Carlo sim cards are the only forward model."
+)
+
 ModelFamily = Literal["pit_next", "sim_plan"]
 
 MODEL_FAMILIES: dict[str, ModelFamily] = {
@@ -52,6 +58,11 @@ def model_family(model_id: str) -> ModelFamily:
     if fam is None:
         raise ValueError(f"unknown model family for {model_id!r}")
     return fam
+
+
+def advisory_mismatch(pit_next: int, y_true_next_lap: int | None) -> bool:
+    """Advised box on lap+1 but the driver stayed out in history."""
+    return y_true_next_lap is not None and pit_next == 1 and y_true_next_lap == 0
 
 
 def planned_pit_lap(
@@ -81,6 +92,7 @@ class HarnessLapDecision:
     y_true_next_lap: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        mismatch = advisory_mismatch(self.pit_next, self.y_true_next_lap)
         return {
             "lap": self.lap,
             "action": self.action,
@@ -89,6 +101,7 @@ class HarnessLapDecision:
             "chosen_label": self.chosen_label,
             "regret": self.regret,
             "y_true_next_lap": self.y_true_next_lap,
+            "advisory_mismatch": mismatch,
         }
 
 
@@ -127,6 +140,7 @@ class RaceDriverResult:
     decisions: list[HarnessLapDecision]
     stints: list[StintScore] = field(default_factory=list)
     flip_flop_rate: float | None = None
+    flip_flop_rate_clean: float | None = None
     mean_regret: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -136,6 +150,7 @@ class RaceDriverResult:
             "driver_id": self.driver_id,
             "n_laps": len(self.laps),
             "flip_flop_rate": self.flip_flop_rate,
+            "flip_flop_rate_clean": self.flip_flop_rate_clean,
             "mean_regret": self.mean_regret,
             "stints": [s.to_dict() for s in self.stints],
         }
@@ -295,8 +310,11 @@ def aggregate_model_summary(
     fam = model_family(model_id)
     stints: list[StintScore] = []
     next_matches: list[float] = []
+    next_matches_clean: list[float] = []
+    advisory_mismatches: list[float] = []
     regrets: list[float] = []
     flip_rates: list[float] = []
+    flip_rates_clean: list[float] = []
     n_laps = 0
 
     for row in rows:
@@ -305,19 +323,36 @@ def aggregate_model_summary(
         for d in row.decisions:
             if d.y_true_next_lap is not None:
                 next_matches.append(float(d.pit_next == d.y_true_next_lap))
+                if not advisory_mismatch(d.pit_next, d.y_true_next_lap):
+                    next_matches_clean.append(
+                        float(d.pit_next == d.y_true_next_lap)
+                    )
+                if advisory_mismatch(d.pit_next, d.y_true_next_lap):
+                    advisory_mismatches.append(1.0)
             if d.regret is not None:
                 regrets.append(d.regret)
         if row.flip_flop_rate is not None:
             flip_rates.append(row.flip_flop_rate)
+        if row.flip_flop_rate_clean is not None:
+            flip_rates_clean.append(row.flip_flop_rate_clean)
 
     timing = _timing_summary(stints)
+    n_scored = len(next_matches)
     out: dict[str, Any] = {
         "model_id": model_id,
         "family": fam,
         "n_race_drivers": len(rows),
         "n_laps": n_laps,
         "next_lap_match": (
-            round(sum(next_matches) / len(next_matches), 4) if next_matches else None
+            round(sum(next_matches) / n_scored, 4) if n_scored else None
+        ),
+        "next_lap_match_excl_advisory_mismatch": (
+            round(sum(next_matches_clean) / len(next_matches_clean), 4)
+            if next_matches_clean
+            else None
+        ),
+        "advisory_mismatch_rate": (
+            round(sum(advisory_mismatches) / n_scored, 4) if n_scored else None
         ),
         **timing,
     }
@@ -325,6 +360,11 @@ def aggregate_model_summary(
         out["mean_regret"] = round(sum(regrets) / len(regrets), 4) if regrets else None
         out["flip_flop_rate"] = (
             round(sum(flip_rates) / len(flip_rates), 4) if flip_rates else None
+        )
+        out["flip_flop_rate_clean"] = (
+            round(sum(flip_rates_clean) / len(flip_rates_clean), 4)
+            if flip_rates_clean
+            else None
         )
     return out
 
@@ -523,7 +563,12 @@ class SimHarnessModel:
             driver_id=driver_id,
             laps=raw.laps,
             decisions=decisions,
-            flip_flop_rate=raw.flip_flop_rate() if memory else None,
+            flip_flop_rate=raw.flip_flop_rate(replay) if memory else None,
+            flip_flop_rate_clean=(
+                raw.flip_flop_rate(replay, exclude_advisory_mismatch=True)
+                if memory
+                else None
+            ),
             mean_regret=raw.mean_regret,
         )
 
@@ -571,6 +616,8 @@ def _compact_stint_stats(row: RaceDriverResult) -> dict[str, Any]:
         out["mean_regret"] = row.mean_regret
     if row.flip_flop_rate is not None:
         out["flip_flop_rate"] = row.flip_flop_rate
+    if row.flip_flop_rate_clean is not None:
+        out["flip_flop_rate_clean"] = row.flip_flop_rate_clean
     return out
 
 
@@ -622,6 +669,7 @@ def run_harness(
 
     return {
         "harness_version": HARNESS_VERSION,
+        "eval_contract": EVAL_CONTRACT,
         "frozen_races_id": FROZEN_RACES_ID,
         "tolerance_laps": tolerance_laps,
         "memory_default": memory,
@@ -631,24 +679,47 @@ def run_harness(
         "leaderboard_sim_plan": sim_plan_board,
         "by_race_driver": by_race_driver,
         "lap_records": _lap_records(all_rows),
-        "metric_definitions": {
-            "pit_next": (
-                "Timing MAE = |first box-next-lap stop − actual pit| per stint; "
-                f"within ±{tolerance_laps} laps."
-            ),
-            "sim_plan": (
-                "Timing MAE = |planned stop (from lap before actual pit) − actual pit| "
-                f"per stint; within ±{tolerance_laps} laps. "
-                "Uses stay_N_then_pit / pit_next card labels."
-            ),
-            "next_lap_match": (
-                "Fraction of laps where pit/stay for lap+1 matches history."
-            ),
-            "mean_regret": "Sim only: E[finish|chosen] − E[finish|oracle] on option cards.",
-            "flip_flop_rate": (
-                "Sim only: pit/stay reversals without evidence change (memory on)."
-            ),
-        },
+        "metric_definitions": build_metric_definitions(tolerance_laps),
+    }
+
+
+def build_metric_definitions(
+    tolerance_laps: int = DEFAULT_TOLERANCE_LAPS,
+) -> dict[str, str]:
+    return {
+        "eval_contract": EVAL_CONTRACT,
+        "memory": (
+            "Pit-wall memory (with reconciled advice vs execution notes) on "
+            "sim_plan models and pit_next_sim when --memory (default on). "
+            "HGB and heuristic_crew are memory-off frozen per-lap classifiers."
+        ),
+        "pit_next": (
+            "Timing MAE = |first box-next-lap stop − actual pit| per stint; "
+            f"within ±{tolerance_laps} laps."
+        ),
+        "sim_plan": (
+            "Timing MAE = |planned stop (from lap before actual pit) − actual pit| "
+            f"per stint; within ±{tolerance_laps} laps. "
+            "Uses stay_N_then_pit / pit_next card labels."
+        ),
+        "next_lap_match": (
+            "Fraction of laps where pit/stay for lap+1 matches history (primary)."
+        ),
+        "next_lap_match_excl_advisory_mismatch": (
+            "Same as next_lap_match but excluding laps where the model advised "
+            "box and history shows the driver stayed out."
+        ),
+        "advisory_mismatch_rate": (
+            "Fraction of laps where the model advised box on lap+1 but history "
+            "shows the driver stayed out (advisory replay limitation)."
+        ),
+        "mean_regret": "Sim only: E[finish|chosen] − E[finish|oracle] on option cards.",
+        "flip_flop_rate": (
+            "Sim only: pit/stay reversals without evidence change (memory on)."
+        ),
+        "flip_flop_rate_clean": (
+            "Sim only: flip-flop rate excluding pairs after an unexecuted box call."
+        ),
     }
 
 
@@ -658,21 +729,31 @@ def _fmt_pct(value: float | None) -> str:
     return f"{100 * value:.1f}%"
 
 
+def _fmt_num(value: float | int | None) -> str:
+    if value is None:
+        return "—"
+    return str(value)
+
+
 def render_report(payload: dict[str, Any]) -> str:
     tol = payload.get("tolerance_laps", 2)
     defs = payload.get("metric_definitions") or {}
     lines = [
         f"# Eval harness {payload.get('harness_version')}",
         "",
+        str(payload.get("eval_contract") or defs.get("eval_contract") or ""),
+        "",
         f"Frozen set `{payload.get('frozen_races_id')}` · tolerance ±{tol} laps · "
         f"memory (sim)={payload.get('memory_default')}",
+        "",
+        defs.get("memory", ""),
         "",
         "## Pit-next models (HGB, crew chief, pit-next sim)",
         "",
         defs.get("pit_next", ""),
         "",
-        "| Model | Timing MAE | Within ±tol | Next-lap match | Stints scored |",
-        "|-------|------------|-------------|----------------|---------------|",
+        "| Model | Timing MAE | Within ±tol | Next-lap match | Adv. mismatch | Stints |",
+        "|-------|------------|-------------|----------------|---------------|--------|",
     ]
     for row in payload.get("leaderboard_pit_next") or []:
         lines.append(
@@ -680,6 +761,7 @@ def render_report(payload: dict[str, Any]) -> str:
             f"| {row.get('timing_mae', '—')} "
             f"| {_fmt_pct(row.get('pct_within_tolerance'))} "
             f"| {row.get('next_lap_match', '—')} "
+            f"| {_fmt_pct(row.get('advisory_mismatch_rate'))} "
             f"| {row.get('n_scored', 0)}/{row.get('n_stints', 0)} |"
         )
 
@@ -690,23 +772,33 @@ def render_report(payload: dict[str, Any]) -> str:
             "",
             defs.get("sim_plan", ""),
             "",
-            "| Model | Timing MAE | Within ±tol | Next-lap match | Mean regret | Flip-flop |",
-            "|-------|------------|-------------|----------------|-------------|-----------|",
+            "| Model | Timing MAE | Next-lap match | Match (excl mismatch) | "
+            "Mean regret | Flip-flop | Flip-flop (clean) |",
+            "|-------|------------|----------------|----------------------|"
+            "-------------|-----------|-------------------|",
         ]
     )
     for row in payload.get("leaderboard_sim_plan") or []:
         lines.append(
             f"| {row['model_id']} "
             f"| {row.get('timing_mae', '—')} "
-            f"| {_fmt_pct(row.get('pct_within_tolerance'))} "
             f"| {row.get('next_lap_match', '—')} "
+            f"| {row.get('next_lap_match_excl_advisory_mismatch', '—')} "
             f"| {row.get('mean_regret', '—')} "
-            f"| {row.get('flip_flop_rate', '—')} |"
+            f"| {row.get('flip_flop_rate', '—')} "
+            f"| {row.get('flip_flop_rate_clean', '—')} |"
         )
 
     lines.extend(["", "### Shared definitions", ""])
+    lines.append(f"- **Eval contract:** {defs.get('eval_contract', '')}")
     lines.append(f"- **Next-lap match:** {defs.get('next_lap_match', '')}")
+    lines.append(
+        f"- **Next-lap match (excl advisory mismatch):** "
+        f"{defs.get('next_lap_match_excl_advisory_mismatch', '')}"
+    )
+    lines.append(f"- **Advisory mismatch rate:** {defs.get('advisory_mismatch_rate', '')}")
     lines.append(f"- **Mean regret:** {defs.get('mean_regret', '')}")
     lines.append(f"- **Flip-flop:** {defs.get('flip_flop_rate', '')}")
+    lines.append(f"- **Flip-flop (clean):** {defs.get('flip_flop_rate_clean', '')}")
     lines.append("")
     return "\n".join(lines)

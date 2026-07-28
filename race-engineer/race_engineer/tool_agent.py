@@ -10,6 +10,8 @@ from typing import Any
 from race_engineer.crew_chief import (
     CrewChiefDecision,
     RADIO_STYLE_GUIDE,
+    UPCOMING_LAP_DECISION,
+    UPCOMING_LAP_USER_QUESTION,
     parse_decision,
 )
 from race_engineer.faithfulness import faithfulness_score
@@ -20,7 +22,7 @@ from race_engineer.state import RaceState
 from race_engineer.tools import OPENAI_TOOL_SCHEMAS, ToolBelt, ToolResult
 
 TOOL_SYSTEM_PROMPT = """You are an F1 race engineer on the pit wall.
-Decide whether the driver should pit on the NEXT lap or stay out.
+""" + UPCOMING_LAP_DECISION + """
 
 You MUST call the provided tools before deciding. Do not invent timing numbers —
 only cite figures returned by tools (or present on the anonymized board).
@@ -182,7 +184,7 @@ class OpenAIToolBackend(ToolAwareBackend):
                 "content": (
                     "Anonymized pit-wall feed:\n\n"
                     f"{board}\n\n"
-                    "Call tools as needed, then decide: pit NEXT lap or stay?"
+                    f"Call tools as needed, then {UPCOMING_LAP_USER_QUESTION}"
                 ),
             },
         ]

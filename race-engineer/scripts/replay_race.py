@@ -74,7 +74,7 @@ def main() -> None:
     )
     print(f"mean_regret={result.mean_regret:.4f}" if result.mean_regret else "")
     if args.memory:
-        ff = result.flip_flop_rate()
+        ff = result.flip_flop_rate(replay)
         print(f"flip_flop_rate={ff:.4f}" if ff is not None else "flip_flop_rate=n/a")
 
     rows = []

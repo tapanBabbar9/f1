@@ -65,7 +65,14 @@ def main() -> None:
         state = replay.get_state(race_id, args.driver_id, args.lap)
         print(state.pit_wall_view())
         print()
-        print(memory.format_prompt_block(race_id, args.driver_id, before_lap=args.lap))
+        print(
+            memory.format_prompt_block(
+                race_id,
+                args.driver_id,
+                before_lap=args.lap,
+                pit_laps=replay.pit_laps(race_id, args.driver_id),
+            )
+        )
         print()
         sd = backend.decide_with_sims(state, memory=memory)
     else:
