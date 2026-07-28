@@ -43,7 +43,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 | **5 — Simulation** | **done** | Monte Carlo pit-now vs stay-N option cards | Finish-position Brier | **Brier P(≤3/5/10)≈0.09/0.17/0.12; MAE≈2.1 pos** (80 pts) |
 | **6 — Reasons Over Sims** | **done** | Choose among option cards + cite sim numbers; dry-race pit rules in prompt + sim | Position regret vs oracle | **regret=0; oracle match 100%; faith≈99%** (80 pts) |
 | **7 — Memory Across Laps** | **done** | Pit-wall memory store + full-race replay wired into Phase 6 | Flip-flop rate + regret delta vs memory-off | **regret delta=0; flip-flop=0** (1087 laps, heuristic_sim) |
-| 8 — Evaluation Harness | next | Full-race replay reports + model scoreboard | Decision match + pit-lap MAE | — |
+| **8 — Evaluation Harness** | **done** | Full-race model compare (pit-lap MAE ±2) | Pit-lap MAE + % within tolerance | **see `artifacts/eval/metrics.json`** |
+| 9 — Historian RAG | next | Similar-stint retrieval tool | Relevance@5 + regret delta | — |
 
 ### Phase 0 — how to run
 
@@ -133,7 +134,16 @@ race-engineer/.venv/bin/python race-engineer/scripts/replay_race.py --memory --b
 race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend heuristic_sim
 ```
 
-Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](race-engineer/artifacts/memory/metrics.json).
+### Phase 8 — how to run
+
+Full-race harness on the frozen set with **two leaderboards** (pit-next vs sim-plan timing; see [`race-engineer/README.md`](race-engineer/README.md)):
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/run_harness.py \
+  --models hgb,heuristic_sim,heuristic_crew --tolerance 2
+```
+
+Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](race-engineer/artifacts/memory/metrics.json), [`eval/metrics.json`](race-engineer/artifacts/eval/metrics.json).
 
 Code: [`race-engineer/`](race-engineer/).
 

@@ -17,6 +17,7 @@ race-engineer/
     sim.py               # Phase 5 Monte Carlo option cards
     sim_agent.py         # Phase 6 reasons over sims
     memory.py            # Phase 7 lap-to-lap pit-wall memory
+    harness.py           # Phase 8 eval harness 1.0.0
     racing_rules.py      # v0 dry-race mandatory pit (prompt + sim filter)
   scripts/
     print_sample_state.py / run_integrity.py / update_dataset.py
@@ -27,6 +28,7 @@ race-engineer/
     simulate_once.py / eval_sim.py
     decide_once_sim.py / eval_sim_agent.py
     replay_race.py / eval_memory.py
+    run_harness.py
   artifacts/
     pit_baseline/metrics.json
     crew_chief/metrics.json
@@ -36,6 +38,8 @@ race-engineer/
     sim_agent/metrics.json
     memory/metrics.json
     eval/frozen_races.json
+    eval/metrics.json
+    eval/harness_manifest.json
   requirements.txt
 ```
 
@@ -43,6 +47,8 @@ race-engineer/
 python3 -m venv race-engineer/.venv
 race-engineer/.venv/bin/pip install -r race-engineer/requirements.txt
 ```
+
+
 
 ## Phase 0 — race state (world model)
 
@@ -217,7 +223,7 @@ race-engineer/.venv/bin/python race-engineer/scripts/predict_lap_deg.py --year 2
 }
 ```
 
-**Intuition:** at lap 22 on mediums, the model expects ~91.4s next; actual was 91.1s (~0.26s error here). Hold-out **2024–25 test: MAE≈1.79s, MAPE≈1.77%**.
+**Intuition:** at lap 22 on mediums, the model expects ~~91.4s next; actual was 91.1s (~~0.26s error here). Hold-out **2024–25 test: MAE≈1.79s, MAPE≈1.77%**.
 
 Committed scoreboard: `artifacts/lap_deg/metrics.json`.
 
@@ -225,7 +231,7 @@ Committed scoreboard: `artifacts/lap_deg/metrics.json`.
 
 **What it does:** roll the race forward under pit-next vs stay-N options (lap deg + pit loss + pace noise). Returns Monte Carlo cards with mean finish position and `P(finish ≤ 3/5/10)`. Exposed as tool `simulate_strategies`.
 
-When `pit_stops so far = 0` on a dry compound, **`stay_to_finish` is omitted** from the option menu (mandatory pit still owed).
+When `pit_stops so far = 0` on a dry compound, `stay_to_finish` **is omitted** from the option menu (mandatory pit still owed).
 
 ```bash
 race-engineer/.venv/bin/python race-engineer/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
@@ -257,3 +263,24 @@ race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend he
 ```
 
 Committed scoreboard: `artifacts/memory/metrics.json` — **regret delta=0**, flip-flop rate **0** (20 race-drivers, 1087 laps; heuristic_sim).
+
+## Phase 8 — evaluation harness 1.0.0
+
+**What it does:** full-race replay on the frozen set (10 races × winner + midfield). Models are split into two families with **separate leaderboards** so timing metrics are comparable:
+
+
+| Family       | Models                                  | Timing MAE                                                                            |
+| ------------ | --------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Pit-next** | `hgb`, `heuristic_crew`, `pit_next_sim` | |first box-next-lap stop − actual pit| per stint                                      |
+| **Sim-plan** | `heuristic_sim`, `openai_sim`           | |planned stop from lap before actual pit − actual pit| (uses `stay_N_then_pit` cards) |
+
+
+Shared: **next-lap match** (pit/stay for lap+1 vs history). Sim-only: **mean regret**, **flip-flop rate**.
+
+```bash
+race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py   # once, for HGB
+race-engineer/.venv/bin/python race-engineer/scripts/run_harness.py \
+  --models hgb,heuristic_sim,heuristic_crew --tolerance 2
+```
+
+Outputs: `artifacts/eval/metrics.json` (`leaderboard_pit_next`, `leaderboard_sim_plan`, `metric_definitions`), `report.md`, `harness_manifest.json` (schema **eval_harness_v1**).

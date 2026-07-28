@@ -1,0 +1,14 @@
+{
+  "harness_version": "1.0.0",
+  "schema": "eval_harness_v1",
+  "leaderboards": [
+    "leaderboard_pit_next",
+    "leaderboard_sim_plan"
+  ],
+  "models": [
+    "hgb",
+    "heuristic_sim",
+    "heuristic_crew"
+  ],
+  "frozen_races_id": "frozen_v1"
+}

@@ -25,6 +25,8 @@ race-engineer-cli/*
 !race-engineer/artifacts/sim_agent/metrics.json
 !race-engineer/artifacts/memory/metrics.json
 !race-engineer/artifacts/eval/frozen_races.json
+!race-engineer/artifacts/eval/metrics.json
+!race-engineer/artifacts/eval/harness_manifest.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
