@@ -82,6 +82,43 @@ class TestSim(unittest.TestCase):
         self.assertGreaterEqual(out["n_options"], 2)
         self.assertIn("oracle_option_id", out)
         self.assertEqual(len(out["options"]), out["n_options"])
+        self.assertEqual(out["options"][0]["n_rolls"], 64)
+
+    def test_sim_finish_stable_when_evidence_unchanged(self):
+        """E[finish] should not swing wildly across +1 lap at same board bucket."""
+        replay = self.replay
+        race_id = 1052
+        driver_id = 1
+        if race_id not in replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        cards_by_lap = {}
+        for lap in (6, 7):
+            try:
+                state = replay.get_state(race_id, driver_id, lap)
+            except KeyError:
+                self.skipTest(f"lap {lap} missing for 1052/1")
+            cards = simulate_strategy_cards(replay, state, n_rolls=64, seed=42)
+            best = oracle_best(cards)
+            cards_by_lap[lap] = best.mean_finish_pos
+        if 6 in cards_by_lap and 7 in cards_by_lap:
+            self.assertLess(
+                abs(cards_by_lap[7] - cards_by_lap[6]),
+                5.0,
+                msg=f"L6 E={cards_by_lap[6]} L7 E={cards_by_lap[7]}",
+            )
+
+    def test_sim_realistic_near_board_position(self):
+        """At P2 with healthy gaps, E[finish] should stay in plausible range."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 6)
+        cards = simulate_strategy_cards(self.replay, state, n_rolls=64, seed=42)
+        best = oracle_best(cards)
+        self.assertLessEqual(best.mean_finish_pos, state.position + 6)
+        self.assertGreaterEqual(best.mean_finish_pos, 1.0)
+        pit_card = next(c for c in cards if c.label == "pit_next_lap")
+        stay_card = next(c for c in cards if c.label == "stay_8_then_pit")
+        self.assertLessEqual(pit_card.planned_pit_lap or 0, stay_card.planned_pit_lap or 99)
 
 
 if __name__ == "__main__":

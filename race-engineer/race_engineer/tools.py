@@ -238,11 +238,12 @@ class ToolBelt:
     def simulate_strategies(self) -> dict[str, Any]:
         """Phase 5 option cards: pit-next vs stay-N Monte Carlo."""
         from race_engineer.racing_rules import mandatory_dry_pit_pending
-        from race_engineer.sim import oracle_best, simulate_strategy_cards
+        from race_engineer.sim import DEFAULT_N_ROLLS, oracle_best, simulate_strategy_cards
 
         try:
-            # Keep rolls modest for tool latency; eval_sim.py uses higher N.
-            cards = simulate_strategy_cards(self.replay, self.state, n_rolls=16, seed=42)
+            cards = simulate_strategy_cards(
+                self.replay, self.state, n_rolls=DEFAULT_N_ROLLS, seed=42
+            )
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "error": str(exc)}
         best = oracle_best(cards)

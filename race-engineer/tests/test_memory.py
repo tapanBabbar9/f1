@@ -49,6 +49,48 @@ class TestMemory(unittest.TestCase):
         self.assertIn("Pit-wall memory", block)
         self.assertIn("stay_8_then_pit", block)
         self.assertIn("L22", block)
+        self.assertNotIn("E[finish]", block)
+        self.assertNotIn("Plan stay 8 then box", block)
+
+    def test_memory_prompt_summarizes_same_plan(self):
+        store = RaceMemoryStore()
+        base = dict(
+            action="stay",
+            chosen_option_id="D",
+            chosen_label="stay_8_then_pit",
+            oracle_option_id="D",
+            rationale="numbers",
+            sim={"available": True, "oracle_option_id": "D"},
+            mean_finish_pos=1.0,
+        )
+        for lap in (21, 22, 23):
+            store.record_sim_decision(
+                self.replay.get_state(1132, 1, lap), **base
+            )
+        block = store.format_prompt_block(1132, 1, before_lap=24)
+        self.assertIn("L21-23", block)
+        self.assertNotIn("L21:", block)
+
+    def test_finish_pos_swing_detection(self):
+        store = RaceMemoryStore()
+        sim = {"available": True, "oracle_option_id": "D"}
+        ev = "P2|gap1500|gbp3000|MEDIUM|pc0|sc0|oD"
+        for lap, mf in ((6, 1.0), (7, 18.0)):
+            s = self.replay.get_state(1132, 1, lap)
+            store.record_sim_decision(
+                s,
+                action="stay",
+                chosen_option_id="D",
+                chosen_label="stay_8_then_pit",
+                oracle_option_id="D",
+                rationale="x",
+                sim=sim,
+                mean_finish_pos=mf,
+            )
+            store._entries[(1132, 1)][-1].evidence = ev
+        swings = store.finish_pos_swings(1132, 1)
+        self.assertEqual(len(swings), 1)
+        self.assertAlmostEqual(swings[0][2], 17.0)
 
     def test_memory_reconcile_advised_pit_driver_stayed_out(self):
         store = RaceMemoryStore()
@@ -68,6 +110,47 @@ class TestMemory(unittest.TestCase):
             self.assertIn("executed lap 4", line)
         else:
             self.assertIn("advised box lap 4; driver stayed out", line)
+
+    def test_memory_reconcile_advised_stay_driver_pitted(self):
+        store = RaceMemoryStore()
+        s12 = self.replay.get_state(1132, 1, 12)
+        store.record_sim_decision(
+            s12,
+            action="stay",
+            chosen_option_id="D",
+            chosen_label="stay_8_then_pit",
+            oracle_option_id="D",
+            rationale="Hold.",
+            sim={"available": True, "oracle_option_id": "D"},
+        )
+        line = store.entries(1132, 1)[0].prompt_line(pit_laps=frozenset({13}))
+        self.assertIn("advised stay; driver pitted lap 13", line)
+        self.assertIn("stay_8_then_pit", line)
+
+    def test_memory_prompt_splits_stay_execution_mismatch(self):
+        store = RaceMemoryStore()
+        base = dict(
+            action="stay",
+            chosen_option_id="D",
+            chosen_label="stay_8_then_pit",
+            oracle_option_id="D",
+            rationale="numbers",
+            sim={"available": True, "oracle_option_id": "D"},
+            mean_finish_pos=5.0,
+        )
+        for lap in (10, 11):
+            store.record_sim_decision(
+                self.replay.get_state(1132, 1, lap), **base
+            )
+        store.record_sim_decision(
+            self.replay.get_state(1132, 1, 12), **base
+        )
+        block = store.format_prompt_block(
+            1132, 1, before_lap=13, pit_laps=frozenset({13})
+        )
+        self.assertIn("L10-11: stay", block)
+        self.assertIn("L12: advised stay; driver pitted lap 13", block)
+        self.assertNotIn("L10-12", block)
 
     def test_memory_reconcile_advised_pit_executed(self):
         store = RaceMemoryStore()

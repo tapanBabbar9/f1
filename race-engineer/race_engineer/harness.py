@@ -141,6 +141,7 @@ class RaceDriverResult:
     stints: list[StintScore] = field(default_factory=list)
     flip_flop_rate: float | None = None
     flip_flop_rate_clean: float | None = None
+    finish_pos_swing_rate: float | None = None
     mean_regret: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,6 +152,7 @@ class RaceDriverResult:
             "n_laps": len(self.laps),
             "flip_flop_rate": self.flip_flop_rate,
             "flip_flop_rate_clean": self.flip_flop_rate_clean,
+            "finish_pos_swing_rate": self.finish_pos_swing_rate,
             "mean_regret": self.mean_regret,
             "stints": [s.to_dict() for s in self.stints],
         }
@@ -569,6 +571,7 @@ class SimHarnessModel:
                 if memory
                 else None
             ),
+            finish_pos_swing_rate=raw.finish_pos_swing_rate() if memory else None,
             mean_regret=raw.mean_regret,
         )
 
@@ -618,6 +621,8 @@ def _compact_stint_stats(row: RaceDriverResult) -> dict[str, Any]:
         out["flip_flop_rate"] = row.flip_flop_rate
     if row.flip_flop_rate_clean is not None:
         out["flip_flop_rate_clean"] = row.flip_flop_rate_clean
+    if row.finish_pos_swing_rate is not None:
+        out["finish_pos_swing_rate"] = row.finish_pos_swing_rate
     return out
 
 

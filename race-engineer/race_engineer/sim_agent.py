@@ -18,7 +18,7 @@ from race_engineer.crew_chief import (
     parse_decision,
 )
 from race_engineer.faithfulness import faithfulness_score
-from race_engineer.memory import RaceMemoryStore
+from race_engineer.memory import DEFAULT_FINISH_SWING_THRESHOLD, RaceMemoryStore
 from race_engineer.racing_rules import DRY_MANDATORY_PIT_RULES, mandatory_dry_pit_pending
 from race_engineer.replay import RaceReplay
 from race_engineer.sim import OptionCard, oracle_best
@@ -56,7 +56,8 @@ MEMORY_PROMPT_NOTE = """
 When pit-wall memory is present, treat it as your prior advice. Notes like
 "driver stayed out" reflect historical execution, not a retraction of your call.
 Revise only when gaps, position, safety car, compound, or sim option rankings
-materially change.
+materially change. Memory lists plans only — always cite fresh numbers from
+simulate_strategies for E_finish / P_finish.
 """
 
 
@@ -566,6 +567,19 @@ class RaceReplayResult:
             self.driver_id,
             pit_laps=pit_laps,
             exclude_advisory_mismatch=exclude_advisory_mismatch,
+        )
+
+    def finish_pos_swing_rate(
+        self,
+        *,
+        threshold: float = DEFAULT_FINISH_SWING_THRESHOLD,
+    ) -> float | None:
+        if self.memory is None:
+            return None
+        return self.memory.finish_pos_swing_rate(
+            self.race_id,
+            self.driver_id,
+            threshold=threshold,
         )
 
 

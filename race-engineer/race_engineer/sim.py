@@ -21,9 +21,19 @@ from race_engineer.state import RaceState
 
 # Default green-flag pit loss (station + in/out). Circuit-specific later.
 DEFAULT_PIT_LOSS_MS = 22_000.0
+DEFAULT_SC_PIT_LOSS_MS = 12_000.0  # lower effective loss under SC
 DEFAULT_NOISE_MS = 400.0  # per-lap Gaussian noise in MC
 DEFAULT_N_ROLLS = 64
 DEFAULT_STAY_NS = (0, 3, 5, 8)  # 0 = pit next lap
+# Lap times above this (ms) are SC-inflated and must not anchor green-flag rollouts.
+_SC_LAP_MS_THRESHOLD = 100_000.0
+# Fresh-stint pace gain vs each driver's own green-flag lap (ms).
+_FRESH_TYRE_GAIN_MS = 600.0
+# Cap rival jitter so remaining-lap scaling does not swamp ranking.
+_RIVAL_NOISE_LAP_CAP = 12
+# Blend sim E[finish] toward board P when gaps are healthy (front-running).
+_BOARD_BLEND_WEIGHT = 0.35
+_BOARD_BLEND_MAX_GAP_MS = 5_000
 
 
 @dataclass
@@ -45,9 +55,10 @@ class OptionCard:
     p_finish_le_5: float
     p_finish_le_10: float
     mean_race_time_ms: float
+    planned_pit_lap: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "option_id": self.option_id,
             "label": self.label,
             "pit_after_laps": self.pit_after_laps,
@@ -59,6 +70,9 @@ class OptionCard:
             "P_finish_le_10": round(self.p_finish_le_10, 4),
             "mean_race_time_ms": round(self.mean_race_time_ms, 1),
         }
+        if self.planned_pit_lap is not None:
+            out["planned_pit_lap"] = self.planned_pit_lap
+        return out
 
 
 @dataclass
@@ -144,12 +158,15 @@ class PaceSchedule:
     fallback_ms: float
 
     def lap_ms(self, snap: SimSnapshot, rng: np.random.Generator, noise_ms: float) -> float:
-        pair = self.by_compound.get(snap.compound_id)
-        if pair is None:
-            base = self.fallback_ms
+        if snap.sc_active > 0.5:
+            base = max(snap.last_lap_ms, 100_000.0)
         else:
-            intercept, slope = pair
-            base = intercept + slope * snap.tyre_life
+            pair = self.by_compound.get(snap.compound_id)
+            if pair is None:
+                base = self.fallback_ms
+            else:
+                intercept, slope = pair
+                base = intercept + slope * snap.tyre_life
         if noise_ms > 0:
             base = base + float(rng.normal(0.0, noise_ms))
         return max(base, 40_000.0)
@@ -172,17 +189,59 @@ def _probe_ms(deg: LapDegModel, snap: SimSnapshot, tyre_life: float, compound_id
     return float(deg.model.predict(probe.feature_row())[0])
 
 
+def _green_flag_anchor_ms(deg: LapDegModel | None, snap0: SimSnapshot) -> float:
+    """Pace anchor for MC rollouts; SC / slow laps must not skew green projection."""
+    if (
+        snap0.sc_active < 0.5
+        and snap0.last_lap_ms < _SC_LAP_MS_THRESHOLD
+    ):
+        return snap0.last_lap_ms
+    if deg is not None:
+        green = SimSnapshot(
+            circuit_id=snap0.circuit_id,
+            lap=snap0.lap,
+            total_laps=snap0.total_laps,
+            stint_age=snap0.stint_age,
+            tyre_life=snap0.tyre_life,
+            compound_id=snap0.compound_id,
+            last_lap_ms=snap0.last_lap_ms,
+            prev_lap_ms=snap0.prev_lap_ms,
+            prev2_lap_ms=snap0.prev2_lap_ms,
+            sc_active=0.0,
+            cumulative_ms=snap0.cumulative_ms,
+        )
+        return float(deg.model.predict(green.feature_row())[0])
+    for ms in (snap0.prev_lap_ms, snap0.prev2_lap_ms, snap0.last_lap_ms):
+        if ms < _SC_LAP_MS_THRESHOLD:
+            return ms
+    return 95_000.0
+
+
 def build_pace_schedule(deg: LapDegModel | None, snap0: SimSnapshot) -> PaceSchedule:
-    fallback = snap0.last_lap_ms
+    anchor_ms = _green_flag_anchor_ms(deg, snap0)
     if deg is None:
-        return PaceSchedule(by_compound={}, fallback_ms=fallback)
+        return PaceSchedule(by_compound={}, fallback_ms=anchor_ms)
 
     by_c: dict[float, tuple[float, float]] = {}
     compounds = {snap0.compound_id, 3.0}  # current + default post-pit HARD
+    green_snap = SimSnapshot(
+        circuit_id=snap0.circuit_id,
+        lap=snap0.lap,
+        total_laps=snap0.total_laps,
+        stint_age=snap0.stint_age,
+        tyre_life=snap0.tyre_life,
+        compound_id=snap0.compound_id,
+        last_lap_ms=anchor_ms,
+        prev_lap_ms=snap0.prev_lap_ms,
+        prev2_lap_ms=snap0.prev2_lap_ms,
+        sc_active=0.0,
+        cumulative_ms=snap0.cumulative_ms,
+    )
     for cid in compounds:
         life0 = snap0.tyre_life if cid == snap0.compound_id else 0.0
-        y0 = _probe_ms(deg, snap0, life0, cid)
-        y1 = _probe_ms(deg, snap0, life0 + 8.0, cid)
+        probe = green_snap if cid == snap0.compound_id else green_snap
+        y0 = _probe_ms(deg, probe, life0, cid)
+        y1 = _probe_ms(deg, probe, life0 + 8.0, cid)
         # Wear-only: never allow "faster with age" in the MC schedule.
         slope = max(0.0, (y1 - y0) / 8.0)
         # Express as intercept at life=0: y = intercept + slope * life
@@ -190,13 +249,26 @@ def build_pace_schedule(deg: LapDegModel | None, snap0: SimSnapshot) -> PaceSche
         # Anchor current compound so first predicted lap stays near board pace.
         if cid == snap0.compound_id:
             predicted_now = intercept + slope * snap0.tyre_life
-            shift = snap0.last_lap_ms - predicted_now
+            shift = anchor_ms - predicted_now
             intercept = intercept + shift
+        elif cid == 3.0:
+            # Post-pit HARD: align with fresh-tyre pace used for rival projection.
+            fresh = _fresh_tyre_pace_ms(anchor_ms)
+            intercept = fresh
+            slope = max(slope, 0.0)
         by_c[cid] = (intercept, slope)
-    return PaceSchedule(by_compound=by_c, fallback_ms=fallback)
+    return PaceSchedule(by_compound=by_c, fallback_ms=anchor_ms)
 
 
-def _apply_lap(snap: SimSnapshot, lap_ms: float) -> SimSnapshot:
+def _laps_until_sc_end(replay: RaceReplay, race_id: int, lap: int, total_laps: int) -> int:
+    for deployed, retreated in replay._sc_periods.get(race_id, []):
+        end = total_laps if retreated is None else retreated
+        if deployed <= lap <= end:
+            return max(0, end - lap)
+    return 0
+
+
+def _apply_lap(snap: SimSnapshot, lap_ms: float, *, sc_after: float = 0.0) -> SimSnapshot:
     return SimSnapshot(
         circuit_id=snap.circuit_id,
         lap=snap.lap + 1,
@@ -207,7 +279,7 @@ def _apply_lap(snap: SimSnapshot, lap_ms: float) -> SimSnapshot:
         last_lap_ms=lap_ms,
         prev_lap_ms=snap.last_lap_ms,
         prev2_lap_ms=snap.prev_lap_ms,
-        sc_active=0.0,  # v0: no SC evolution mid-sim
+        sc_active=sc_after,
         cumulative_ms=snap.cumulative_ms + lap_ms,
     )
 
@@ -235,28 +307,132 @@ def _pit_stop(
     )
 
 
+def _recent_green_pace_ms(
+    replay: RaceReplay,
+    race_id: int,
+    driver_id: int,
+    lap: int,
+    total_laps: int,
+    *,
+    board_sc_active: bool,
+) -> float:
+    laps = replay._laps.get(race_id, {}).get(driver_id, {})
+    recent: list[float] = []
+    for L in range(lap, max(0, lap - 2) - 1, -1):
+        if L not in laps:
+            continue
+        ms = float(laps[L]["milliseconds"])
+        if not board_sc_active:
+            sc_at_l, _, _, _ = replay._sc_flags(race_id, L, total_laps)
+            if sc_at_l or ms >= _SC_LAP_MS_THRESHOLD:
+                continue
+        recent.append(ms)
+    if not recent and not board_sc_active:
+        for L in range(lap, max(0, lap - 8) - 1, -1):
+            if L not in laps:
+                continue
+            ms = float(laps[L]["milliseconds"])
+            sc_at_l, _, _, _ = replay._sc_flags(race_id, L, total_laps)
+            if not sc_at_l and ms < _SC_LAP_MS_THRESHOLD:
+                return ms
+    return float(np.mean(recent)) if recent else 90_000.0
+
+
+def _project_driver_finish_ms(
+    replay: RaceReplay,
+    state: RaceState,
+    driver_id: int,
+    cum: float,
+    *,
+    remaining: int,
+    pace_ms: float,
+    post_pit_pace_ms: float,
+    pit_loss_ms: float,
+) -> float:
+    """Historical replay projection: rivals follow known future pit laps."""
+    if remaining <= 0:
+        return cum
+    pit_laps = sorted(
+        p for p in replay._pits.get(state.race_id, {}).get(driver_id, [])
+        if p > state.lap
+    )
+    if pit_laps:
+        first_pit = pit_laps[0]
+        laps_before = max(0, first_pit - state.lap)
+        laps_after = max(0, remaining - laps_before)
+        return (
+            float(cum)
+            + laps_before * pace_ms
+            + pit_loss_ms
+            + laps_after * post_pit_pace_ms
+        )
+    return float(cum) + remaining * pace_ms
+
+
+def _fresh_tyre_pace_ms(pre_pit_pace_ms: float) -> float:
+    return max(pre_pit_pace_ms - _FRESH_TYRE_GAIN_MS, 85_000.0)
+
+
 def rival_finish_times_ms(
     replay: RaceReplay,
     state: RaceState,
+    *,
+    pit_loss_ms: float = DEFAULT_PIT_LOSS_MS,
 ) -> list[float]:
     """
-    Static-rival finish estimates: current cumulative + remaining * recent pace.
-    Excludes the ego driver.
+    Rival finish estimates: each driver's green-flag pace plus known future pit
+    laps and a driver-specific fresh-tyre offset. Excludes the ego driver.
     """
     cumul = replay._cumulative_times(state.race_id, state.lap)
     remaining = max(0, state.total_laps - state.lap)
+    total = state.total_laps
     out: list[float] = []
     for did, cum in cumul.items():
         if did == state.driver_id:
             continue
-        laps = replay._laps.get(state.race_id, {}).get(did, {})
-        recent = []
-        for L in range(state.lap, max(0, state.lap - 2) - 1, -1):
-            if L in laps:
-                recent.append(laps[L]["milliseconds"])
-        pace = float(np.mean(recent)) if recent else 90_000.0
-        out.append(float(cum) + remaining * pace)
+        pace = _recent_green_pace_ms(
+            replay,
+            state.race_id,
+            did,
+            state.lap,
+            total,
+            board_sc_active=state.sc_active,
+        )
+        post_pit = _fresh_tyre_pace_ms(pace)
+        out.append(
+            _project_driver_finish_ms(
+                replay,
+                state,
+                did,
+                float(cum),
+                remaining=remaining,
+                pace_ms=pace,
+                post_pit_pace_ms=post_pit,
+                pit_loss_ms=pit_loss_ms,
+            )
+        )
     return out
+
+
+def finish_position(ego_finish_ms: float, rival_finishes: Sequence[float]) -> int:
+    worse = sum(1 for t in rival_finishes if t < ego_finish_ms)
+    return worse + 1
+
+
+def finish_position_board_blend(raw_pos: int, state: RaceState) -> float:
+    """Pull projected finish toward board P when gaps support a front-running read."""
+    if state.position > 5:
+        return float(raw_pos)
+    if state.gap_ahead_ms is not None and state.gap_ahead_ms > _BOARD_BLEND_MAX_GAP_MS:
+        return float(raw_pos)
+    # Do not project a front-runner to the back unless tyres truly cliff.
+    max_drop = 3 + (state.stint_age_laps // 3)
+    capped = min(raw_pos, state.position + max(3, max_drop))
+    w = _BOARD_BLEND_WEIGHT
+    if capped > state.position + 4:
+        w = min(0.55, w + 0.15)
+    blended = w * float(state.position) + (1.0 - w) * float(capped)
+    return max(1.0, min(float(state.drivers_on_track), blended))
 
 
 def simulate_ego_finish_ms(
@@ -267,6 +443,7 @@ def simulate_ego_finish_ms(
     pit_loss_ms: float,
     rng: np.random.Generator,
     noise_ms: float,
+    laps_until_sc_end: int = 0,
 ) -> float:
     """
     Roll from current lap to total_laps.
@@ -285,20 +462,38 @@ def simulate_ego_finish_ms(
         target_pit = remaining + 1  # never
 
     laps_done = 0
+    sc_left = laps_until_sc_end
     while snap.lap < snap.total_laps:
-        # Pit at the start of this iteration if scheduled.
         if (not pitted) and laps_done >= target_pit and target_pit <= remaining:
             snap = _pit_stop(snap, pit_loss_ms)
             pitted = True
-        lap_ms = pace.lap_ms(snap, rng, noise_ms)
-        snap = _apply_lap(snap, lap_ms)
+        sc_now = 1.0 if sc_left > 0 else 0.0
+        roll = SimSnapshot(
+            circuit_id=snap.circuit_id,
+            lap=snap.lap,
+            total_laps=snap.total_laps,
+            stint_age=snap.stint_age,
+            tyre_life=snap.tyre_life,
+            compound_id=snap.compound_id,
+            last_lap_ms=snap.last_lap_ms,
+            prev_lap_ms=snap.prev_lap_ms,
+            prev2_lap_ms=snap.prev2_lap_ms,
+            sc_active=sc_now,
+            cumulative_ms=snap.cumulative_ms,
+        )
+        lap_ms = pace.lap_ms(roll, rng, noise_ms)
+        sc_after = 1.0 if sc_left > 1 else 0.0
+        snap = _apply_lap(snap, lap_ms, sc_after=sc_after)
+        if sc_left > 0:
+            sc_left -= 1
         laps_done += 1
     return snap.cumulative_ms
 
 
-def finish_position(ego_finish_ms: float, rival_finishes: Sequence[float]) -> int:
-    worse = sum(1 for t in rival_finishes if t < ego_finish_ms)
-    return worse + 1
+def _planned_pit_lap(state_lap: int, pit_after_laps: int) -> int:
+    if pit_after_laps <= 0:
+        return state_lap + 1
+    return state_lap + pit_after_laps
 
 
 def build_default_options(
@@ -363,8 +558,17 @@ def simulate_strategy_cards(
     ego_cum = float(cumul.get(state.driver_id, state.cumulative_time_ms))
     snap0 = SimSnapshot.from_state(state, ego_cum)
     pace = build_pace_schedule(deg, snap0)
-    rivals = rival_finish_times_ms(replay, state)
     remaining = max(0, state.total_laps - state.lap)
+    effective_pit_loss = (
+        DEFAULT_SC_PIT_LOSS_MS if state.sc_active else pit_loss_ms
+    )
+    rivals = rival_finish_times_ms(
+        replay,
+        state,
+        pit_loss_ms=effective_pit_loss,
+    )
+    sc_left = _laps_until_sc_end(replay, state.race_id, state.lap, state.total_laps)
+    rival_noise = noise_ms * math.sqrt(min(remaining, _RIVAL_NOISE_LAP_CAP))
     must_pit = mandatory_dry_pit_pending(state)
     if options is not None:
         opts = list(options)
@@ -385,17 +589,17 @@ def simulate_strategy_cards(
                 snap0,
                 pit_after_laps=opt.pit_after_laps,
                 pace=pace,
-                pit_loss_ms=pit_loss_ms,
+                pit_loss_ms=effective_pit_loss,
                 rng=rng,
                 noise_ms=noise_ms,
+                laps_until_sc_end=sc_left,
             )
-            # Light noise on rivals so ranking isn't fully deterministic.
             noisy_rivals = [
-                r + float(rng.normal(0.0, noise_ms * math.sqrt(max(remaining, 1))))
+                r + float(rng.normal(0.0, rival_noise))
                 for r in rivals
             ]
-            pos = finish_position(finish_ms, noisy_rivals)
-            positions.append(pos)
+            raw_pos = finish_position(finish_ms, noisy_rivals)
+            positions.append(finish_position_board_blend(raw_pos, state))
             times.append(finish_ms)
         pos_a = np.asarray(positions, dtype=np.float64)
         cards.append(
@@ -410,6 +614,7 @@ def simulate_strategy_cards(
                 p_finish_le_5=float(np.mean(pos_a <= 5)),
                 p_finish_le_10=float(np.mean(pos_a <= 10)),
                 mean_race_time_ms=float(np.mean(times)),
+                planned_pit_lap=_planned_pit_lap(state.lap, opt.pit_after_laps),
             )
         )
     return cards

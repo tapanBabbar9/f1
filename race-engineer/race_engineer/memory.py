@@ -9,6 +9,8 @@ from race_engineer.state import RaceState
 
 # Coarse gap buckets for evidence fingerprint (ms).
 _GAP_BUCKET_MS = 500
+# Flag large E[finish] moves when evidence fingerprint is unchanged.
+DEFAULT_FINISH_SWING_THRESHOLD = 5.0
 
 
 def _bucket_gap_ms(value: int | None) -> str:
@@ -62,48 +64,78 @@ class MemoryEntry:
             "mean_finish_pos": self.mean_finish_pos,
         }
 
-    def _option_suffix(self) -> str:
-        mf = (
-            f", E[finish]={self.mean_finish_pos:.2f}"
-            if self.mean_finish_pos is not None
-            else ""
-        )
-        return (
-            f"(option {self.chosen_option_id}, "
-            f"{self.chosen_label}{mf})"
-        )
+    def _plan_meta(self) -> str:
+        return f"(option {self.chosen_option_id}, {self.chosen_label})"
 
-    def prompt_line(self, *, pit_laps: frozenset[int] | None = None) -> str:
-        """One line for the LLM memory block.
-
-        When ``pit_laps`` is set, reconcile engineer advice with historical
-        execution on the upcoming lap (lap+1). Trajectory / stored fields keep
-        raw advice only.
-        """
-        meta = self._option_suffix()
-        rationale = self.rationale[:120]
+    def _head(self, *, pit_laps: frozenset[int] | None = None) -> str:
         upcoming = self.lap + 1
-
         if pit_laps is None:
-            return f"L{self.lap}: {self.action} {meta} — {rationale}"
+            return f"{self.action}"
 
         pitted = upcoming in pit_laps
         if self.action == "pit":
             if pitted:
-                head = f"L{self.lap}: pit (executed lap {upcoming})"
-            else:
-                head = (
-                    f"L{self.lap}: advised box lap {upcoming}; driver stayed out"
-                )
-        elif self.action == "stay" and pitted:
-            head = f"L{self.lap}: advised stay; driver pitted lap {upcoming}"
-        else:
-            head = f"L{self.lap}: stay"
+                return f"pit (executed lap {upcoming})"
+            return f"advised box lap {upcoming}; driver stayed out"
+        if self.action == "stay" and pitted:
+            return f"advised stay; driver pitted lap {upcoming}"
+        return "stay"
 
-        return f"{head} {meta} — {rationale}"
+    def prompt_line(self, *, pit_laps: frozenset[int] | None = None) -> str:
+        """One line for the LLM memory block (plan only — no stale sim numbers)."""
+        return f"L{self.lap}: {self._head(pit_laps=pit_laps)} {self._plan_meta()}"
 
     def one_line(self) -> str:
         return self.prompt_line()
+
+
+def _execution_mismatch(
+    entry: MemoryEntry, pit_laps: frozenset[int]
+) -> bool:
+    """Advice on lap L vs whether the driver pitted on lap L+1."""
+    pitted = (entry.lap + 1) in pit_laps
+    if entry.action == "pit":
+        return not pitted
+    return pitted
+
+
+def _memory_group_key(
+    entry: MemoryEntry, pit_laps: frozenset[int] | None
+) -> tuple[str, str, str, bool]:
+    mismatch = False
+    if pit_laps is not None:
+        mismatch = _execution_mismatch(entry, pit_laps)
+    return (
+        entry.action,
+        entry.chosen_option_id,
+        entry.chosen_label,
+        mismatch,
+    )
+
+
+def _summarize_prompt_lines(
+    entries: list[MemoryEntry],
+    *,
+    pit_laps: frozenset[int] | None,
+) -> list[str]:
+    """Merge consecutive laps with the same plan/evidence into one line."""
+    if not entries:
+        return []
+    groups: list[tuple[tuple[str, str, str, bool], MemoryEntry, MemoryEntry]] = []
+    for entry in entries:
+        key = _memory_group_key(entry, pit_laps)
+        if groups and groups[-1][0] == key and groups[-1][2].lap + 1 == entry.lap:
+            groups[-1] = (key, groups[-1][1], entry)
+        else:
+            groups.append((key, entry, entry))
+
+    lines: list[str] = []
+    for _key, start, end in groups:
+        lap_part = f"L{start.lap}" if start.lap == end.lap else f"L{start.lap}-{end.lap}"
+        lines.append(
+            f"{lap_part}: {start._head(pit_laps=pit_laps)} {start._plan_meta()}"
+        )
+    return lines
 
 
 @dataclass
@@ -184,11 +216,11 @@ class RaceMemoryStore:
         if not prior:
             return ""
         tail = prior[-max_entries:]
-        lines = [e.prompt_line(pit_laps=pit_laps) for e in tail]
+        lines = _summarize_prompt_lines(tail, pit_laps=pit_laps)
         return (
-            "Pit-wall memory (your prior advice this race; notes when the driver "
-            "did not follow a box call — stay consistent unless the board or sim "
-            "cards materially change):\n"
+            "Pit-wall memory (your prior advice this race; plan history only — "
+            "cite E_finish / P_finish from current simulate_strategies, not "
+            "from these lines):\n"
             + "\n".join(f"- {ln}" for ln in lines)
         )
 
@@ -246,3 +278,47 @@ class RaceMemoryStore:
         if eligible == 0:
             return None
         return len(flips) / eligible
+
+    def finish_pos_swings(
+        self,
+        race_id: int,
+        driver_id: int,
+        *,
+        threshold: float = DEFAULT_FINISH_SWING_THRESHOLD,
+    ) -> list[tuple[MemoryEntry, MemoryEntry, float]]:
+        """Consecutive laps with same evidence but large E[finish] move."""
+        rows = self.entries(race_id, driver_id)
+        out: list[tuple[MemoryEntry, MemoryEntry, float]] = []
+        for prev, cur in zip(rows, rows[1:]):
+            if prev.evidence != cur.evidence:
+                continue
+            if prev.mean_finish_pos is None or cur.mean_finish_pos is None:
+                continue
+            delta = abs(prev.mean_finish_pos - cur.mean_finish_pos)
+            if delta >= threshold:
+                out.append((prev, cur, delta))
+        return out
+
+    def finish_pos_swing_rate(
+        self,
+        race_id: int,
+        driver_id: int,
+        *,
+        threshold: float = DEFAULT_FINISH_SWING_THRESHOLD,
+    ) -> float | None:
+        rows = self.entries(race_id, driver_id)
+        if len(rows) < 2:
+            return None
+        swings = self.finish_pos_swings(
+            race_id, driver_id, threshold=threshold
+        )
+        eligible = sum(
+            1
+            for prev, cur in zip(rows, rows[1:])
+            if prev.evidence == cur.evidence
+            and prev.mean_finish_pos is not None
+            and cur.mean_finish_pos is not None
+        )
+        if eligible == 0:
+            return None
+        return len(swings) / eligible
