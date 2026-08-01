@@ -13,7 +13,9 @@ from race_engineer.sim import (
     brier_binary,
     build_default_options,
     finish_position,
+    finish_position_board_sanity,
     oracle_best,
+    projected_finish_position,
     simulate_ego_finish_ms,
     simulate_strategy_cards,
 )
@@ -119,6 +121,42 @@ class TestSim(unittest.TestCase):
         pit_card = next(c for c in cards if c.label == "pit_next_lap")
         stay_card = next(c for c in cards if c.label == "stay_8_then_pit")
         self.assertLessEqual(pit_card.planned_pit_lap or 0, stay_card.planned_pit_lap or 99)
+
+    def test_board_sanity_large_gap_ahead(self):
+        """P3 with large gap ahead should not project finish better than board."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 15)
+        self.assertGreater(state.gap_ahead_ms or 0, 5_000)
+        self.assertEqual(finish_position_board_sanity(1.0, state), float(state.position))
+
+    def test_sim_not_overoptimistic_mid_race(self):
+        """At P3 with large gap ahead, E[finish] should stay near board."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 15)
+        cards = simulate_strategy_cards(self.replay, state, n_rolls=64, seed=42)
+        stay = next(c for c in cards if c.label == "stay_to_finish")
+        self.assertGreaterEqual(stay.mean_finish_pos, state.position - 0.5)
+        self.assertLessEqual(stay.mean_finish_pos, state.position + 2.5)
+
+    def test_sim_stay_preferred_over_pit_after_late_stop(self):
+        """After a recent stop with large gaps, stay should beat a third box."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 29)
+        cards = simulate_strategy_cards(self.replay, state, n_rolls=64, seed=42)
+        stay = next(c for c in cards if c.label == "stay_to_finish")
+        pit = next(c for c in cards if c.label == "pit_next_lap")
+        self.assertLessEqual(stay.mean_finish_pos, pit.mean_finish_pos + 0.1)
+        best = oracle_best(cards)
+        self.assertEqual(best.label, "stay_to_finish")
+
+    def test_projected_finish_position_chain(self):
+        state = self.replay.get_state(1052, 1, 6) if 1052 in self.replay._laps else self.state
+        out = projected_finish_position(10, state)
+        self.assertGreaterEqual(out, 1.0)
+        self.assertLessEqual(out, float(state.drivers_on_track))
 
 
 if __name__ == "__main__":

@@ -36,17 +36,22 @@ Reply with ONLY a JSON object (no markdown):
   "action": "pit" | "stay",
   "tyre": "soft" | "medium" | "hard" | null,
   "push": "low" | "med" | "high",
-  "reason": "<one line, ≤100 chars>",
+  "reason": "<one line, ≤100 chars — decision summary, not a sim dump>",
   "driver_message": "<radio to driver, ≤120 chars>",
   "chosen_option_id": "<option_id from simulate_strategies, e.g. A>",
-  "rationale": "<1-3 sentences citing option E_finish / P_finish numbers>"
+  "rationale": "<1-3 sentences: strategist log with ≥1 fresh sim number>"
 }
 
 Rules:
 - If action is "stay", tyre must be null.
 - If action is "pit", tyre must be soft, medium, or hard.
 - Map pit_next_lap → action pit (upcoming lap; radio: "box this lap"); any stay_* option → action stay.
-- Cite at least one sim number (mean_finish_pos or P_finish_le_*).
+- chosen_option_id MUST match a card from simulate_strategies (decision is binding).
+- Cite at least one fresh sim number (mean_finish_pos or P_finish_le_* as a decimal, e.g. 0.38 not 38%).
+- When top options tie on E_finish (within ~0.5), say they are close; prefer plan continuity.
+- If memory shows the same plan and sim ranking is unchanged, say "maintaining plan" — do not re-litigate every lap.
+- Do not open rationale with "Option X has…" — lead with race context, then cite numbers.
+- reason = operational one-liner; rationale = fuller strategist note; driver_message = radio only (no option letters).
 - Do not name drivers, teams, or race events.
 - The feed withholds race/year/driver; circuit is kept for pit-loss context.
 
@@ -54,11 +59,40 @@ Rules:
 
 MEMORY_PROMPT_NOTE = """
 When pit-wall memory is present, treat it as your prior advice. Notes like
-"driver stayed out" reflect historical execution, not a retraction of your call.
+"driver stayed out" or "driver pitted" reflect historical execution, not a
+retraction of your call.
 Revise only when gaps, position, safety car, compound, or sim option rankings
 materially change. Memory lists plans only — always cite fresh numbers from
 simulate_strategies for E_finish / P_finish.
+If memory shows "advised box …; driver stayed out", treat the current stint as
+committed: do not repeat the same box call on the next lap unless stay is clearly
+worse in sim (E_finish roughly ≥1.0 worse than the best pit option). Acknowledge
+the non-execution briefly in rationale when you change plan.
 """
+
+
+def _strategy_context_lines(
+    state: RaceState,
+    memory: RaceMemoryStore | None,
+    *,
+    pit_laps: frozenset[int] | None,
+) -> list[str]:
+    """Deterministic race context for the user prompt (read-only, no new tools)."""
+    remaining = max(0, state.total_laps - state.lap)
+    lines = [
+        f"Strategy context: {remaining} racing laps remain; "
+        f"pit stops so far {state.pit_count}."
+    ]
+    if state.gap_behind_ms is not None and state.gap_behind_ms < 2_000:
+        lines.append("Undercut pressure: car within two seconds behind.")
+    if memory is not None and pit_laps is not None:
+        last = memory.last_entry(state.race_id, state.driver_id)
+        if last is not None and memory.entry_advisory_mismatch(last, pit_laps):
+            lines.append(
+                "Execution note: your last box call was not taken — current stint "
+                "is committed unless sim strongly favors changing plan."
+            )
+    return lines
 
 
 def build_sim_user_prompt(
@@ -68,9 +102,11 @@ def build_sim_user_prompt(
     replay: RaceReplay | None = None,
 ) -> str:
     base = build_user_prompt(state)
-    if memory is None:
-        return base
     pit_laps = replay.pit_laps(state.race_id, state.driver_id) if replay else None
+    context = _strategy_context_lines(state, memory, pit_laps=pit_laps)
+    parts = [base, "\n".join(context)]
+    if memory is None:
+        return "\n\n".join(parts)
     block = memory.format_prompt_block(
         state.race_id,
         state.driver_id,
@@ -78,8 +114,9 @@ def build_sim_user_prompt(
         pit_laps=pit_laps,
     )
     if not block:
-        return base
-    return f"{base}\n\n{block}\n{MEMORY_PROMPT_NOTE.strip()}"
+        return "\n\n".join(parts)
+    parts.extend([block, MEMORY_PROMPT_NOTE.strip()])
+    return "\n\n".join(parts)
 
 
 def _sim_payload_from_results(tool_results: list[ToolResult]) -> dict[str, Any] | None:

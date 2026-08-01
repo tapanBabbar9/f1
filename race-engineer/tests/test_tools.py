@@ -50,6 +50,16 @@ class TestTools(unittest.TestCase):
         self.assertLess(bad["faithfulness"], 1.0)
         self.assertIn(9.999, bad["unmatched"])
 
+    def test_faithfulness_percent_decimal_equivalent(self):
+        tools = [
+            ToolResult(
+                "simulate_strategies",
+                {"options": [{"P_finish_le_3": 0.375}]},
+            ),
+        ]
+        score = faithfulness_score("Podium chance about 37.5%.", tools)
+        self.assertEqual(score["faithfulness"], 1.0)
+
     def test_extract_numbers(self):
         self.assertEqual(extract_rationale_numbers("age 22, gap +1.001"), [22.0, 1.001])
 

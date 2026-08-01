@@ -34,6 +34,10 @@ _RIVAL_NOISE_LAP_CAP = 12
 # Blend sim E[finish] toward board P when gaps are healthy (front-running).
 _BOARD_BLEND_WEIGHT = 0.35
 _BOARD_BLEND_MAX_GAP_MS = 5_000
+# Gap-based sanity: cannot gain places without closing a gap ahead; large
+# cushion behind limits positions lost (not race-specific tuning).
+_SANITY_GAP_AHEAD_FLOOR_MS = 1_500
+_SANITY_GAP_BEHIND_CAP_MS = 4_000
 
 
 @dataclass
@@ -435,6 +439,54 @@ def finish_position_board_blend(raw_pos: int, state: RaceState) -> float:
     return max(1.0, min(float(state.drivers_on_track), blended))
 
 
+def finish_position_board_sanity(pos: float, state: RaceState) -> float:
+    """Clamp projected finish using board gaps (can't pass cars without closing gaps)."""
+    p = float(state.position)
+    out = float(pos)
+    if state.gap_ahead_ms is not None and state.gap_ahead_ms > _SANITY_GAP_AHEAD_FLOOR_MS:
+        out = max(out, p)
+    if state.gap_behind_ms is not None and state.gap_behind_ms > _SANITY_GAP_BEHIND_CAP_MS:
+        laps_left = max(1, state.total_laps - state.lap)
+        max_drop = min(
+            3.0,
+            1.0 + state.gap_behind_ms / 10_000.0 + laps_left / 40.0,
+        )
+        out = min(out, p + max_drop)
+    # Stable train: large gaps both sides → finish near current position.
+    if (
+        state.gap_ahead_ms is not None
+        and state.gap_ahead_ms > 5_000
+        and state.gap_behind_ms is not None
+        and state.gap_behind_ms > 4_000
+    ):
+        out = min(out, p + 2.0)
+        out = max(out, p)
+    return max(1.0, min(float(state.drivers_on_track), out))
+
+
+def projected_finish_position(raw_pos: int, state: RaceState) -> float:
+    """MC rank → board blend → gap sanity."""
+    blended = finish_position_board_blend(raw_pos, state)
+    return finish_position_board_sanity(blended, state)
+
+
+def _extra_stop_mean_penalty(
+    state: RaceState,
+    label: str,
+    *,
+    pit_after_laps: int,
+    remaining: int,
+) -> float:
+    """Discourage further stops when already on 2+ stops and not chasing."""
+    if label == "stay_to_finish" or state.pit_count < 2:
+        return 0.0
+    if pit_after_laps > remaining:
+        return 0.0
+    if state.gap_ahead_ms is not None and state.gap_ahead_ms > 5_000:
+        return 0.5
+    return 0.0
+
+
 def simulate_ego_finish_ms(
     snap0: SimSnapshot,
     *,
@@ -599,16 +651,19 @@ def simulate_strategy_cards(
                 for r in rivals
             ]
             raw_pos = finish_position(finish_ms, noisy_rivals)
-            positions.append(finish_position_board_blend(raw_pos, state))
+            positions.append(projected_finish_position(raw_pos, state))
             times.append(finish_ms)
         pos_a = np.asarray(positions, dtype=np.float64)
+        mean_pos = float(np.mean(pos_a)) + _extra_stop_mean_penalty(
+            state, opt.label, pit_after_laps=opt.pit_after_laps, remaining=remaining
+        )
         cards.append(
             OptionCard(
                 option_id=opt.option_id,
                 label=opt.label,
                 pit_after_laps=opt.pit_after_laps,
                 n_rolls=n_rolls,
-                mean_finish_pos=float(np.mean(pos_a)),
+                mean_finish_pos=mean_pos,
                 median_finish_pos=float(np.median(pos_a)),
                 p_finish_le_3=float(np.mean(pos_a <= 3)),
                 p_finish_le_5=float(np.mean(pos_a <= 5)),

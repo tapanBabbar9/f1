@@ -40,6 +40,7 @@ Use real gap values from the board, spoken naturally:
 - 2.0 → "two seconds"
 
 Keep messages short, calm, and operational. No driver or team names. No explanations.
+Vary phrasing lap to lap — same decision can use different radio wording.
 """
 
 SYSTEM_PROMPT = """You are an F1 race engineer on the pit wall.

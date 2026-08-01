@@ -13,10 +13,12 @@ from race_engineer.replay import RaceReplay
 from race_engineer.sim_agent import (
     HeuristicSimBackend,
     PitNextSimBaseline,
+    build_sim_user_prompt,
     option_to_action,
     parse_sim_decision,
     position_regret,
 )
+from race_engineer.memory import RaceMemoryStore
 
 DATASET = REPO / "dataset"
 
@@ -41,6 +43,27 @@ class TestSimAgent(unittest.TestCase):
     def test_position_regret(self):
         self.assertAlmostEqual(position_regret(4.0, 2.0), 2.0)
         self.assertAlmostEqual(position_regret(1.0, 1.0), 0.0)
+
+    def test_build_sim_user_prompt_advisory_context(self):
+        store = RaceMemoryStore()
+        s14 = self.replay.get_state(1052, 1, 14) if 1052 in self.replay._laps else self.state
+        store.record_sim_decision(
+            s14,
+            action="pit",
+            chosen_option_id="A",
+            chosen_label="pit_next_lap",
+            oracle_option_id="A",
+            rationale="Box.",
+            sim={"available": True, "oracle_option_id": "A"},
+        )
+        s15 = self.replay.get_state(1052, 1, 15) if 1052 in self.replay._laps else self.state
+        prompt = build_sim_user_prompt(
+            s15, store, replay=self.replay if 1052 in self.replay._laps else None
+        )
+        self.assertIn("Strategy context:", prompt)
+        if 1052 in self.replay._laps:
+            self.assertIn("Execution note:", prompt)
+            self.assertIn("advised box lap 15; driver stayed out", prompt)
 
     def test_parse_requires_option_id(self):
         with self.assertRaises(ValueError):

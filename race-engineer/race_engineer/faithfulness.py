@@ -31,6 +31,17 @@ def _close(a: float, b: float, *, rel: float = 0.02, abs_tol: float = 0.05) -> b
     return abs(a - b) / scale <= rel
 
 
+def _expand_allowed_numbers(allowed: list[float]) -> list[float]:
+    """Accept common citation forms (percent vs decimal probability)."""
+    out = list(allowed)
+    for y in allowed:
+        if 0.0 <= y <= 1.0:
+            out.append(y * 100.0)
+        elif 1.0 < y <= 100.0:
+            out.append(y / 100.0)
+    return out
+
+
 def faithfulness_score(
     rationale: str,
     tool_results: Sequence[ToolResult],
@@ -42,7 +53,7 @@ def faithfulness_score(
     (vacuous pass) and 0.0 if tools were not used.
     """
     cited = extract_rationale_numbers(rationale)
-    allowed = flatten_numbers([t.payload for t in tool_results])
+    allowed = _expand_allowed_numbers(flatten_numbers([t.payload for t in tool_results]))
     tools_used = len(tool_results) > 0
 
     if not cited:
