@@ -22,13 +22,13 @@ Ergast-compatible CSVs under [`dataset/`](dataset/) (1950–present).
 Refresh Ergast-style tables:
 
 ```bash
-python3 race-engineer/scripts/update_dataset.py
+python3 f1-pitwall/scripts/update_dataset.py
 ```
 
 Refresh tyre compounds (separate FastF1 ingest; keeps local cache):
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 2018 2019 2020 2021 2022 2023 2024 2025
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/build_tyre_laps.py --years 2018 2019 2020 2021 2022 2023 2024 2025
 ```
 
 ## Live phases
@@ -44,15 +44,16 @@ race-engineer/.venv/bin/python race-engineer/scripts/build_tyre_laps.py --years 
 | **6 — Reasons Over Sims** | **done** | Choose among option cards + cite sim numbers; dry-race pit rules in prompt + sim | Position regret vs oracle | **regret=0; oracle match 100%; faith≈99%** (80 pts) |
 | **7 — Memory Across Laps** | **done** | Pit-wall memory store + full-race replay wired into Phase 6 | Flip-flop rate + regret delta vs memory-off | **regret delta=0; flip-flop=0** (1087 laps, heuristic_sim) |
 | **8 — Evaluation Harness** | **done** | Full-race model compare (pit-lap MAE ±2) | Pit-lap MAE + % within tolerance | **see `artifacts/eval/metrics.json`** |
-| 9 — Historian RAG | next | Similar-stint retrieval tool | Relevance@5 + regret delta | — |
+| **9 — Multi-Agent Setup** | **done** | Strategy agent + Race Engineer radio post-pass | Action identity under radio swap | **radio cannot change card/memory** |
+| 10 — Historian RAG | next | Similar-stint retrieval tool | Relevance@5 + regret delta | — |
 
 ### Phase 0 — how to run
 
-Worked example (Hamilton, British GP 2024, lap 22) in [`race-engineer/README.md`](race-engineer/README.md).
+Worked example (Hamilton, British GP 2024, lap 22) in [`f1-pitwall/README.md`](f1-pitwall/README.md).
 
 ```bash
-python3 race-engineer/scripts/print_sample_state.py --year 2024 --name-contains British --driver-id 1 --lap 22
-python3 race-engineer/scripts/run_integrity.py --samples 2000
+python3 f1-pitwall/scripts/print_sample_state.py --year 2024 --name-contains British --driver-id 1 --lap 22
+python3 f1-pitwall/scripts/run_integrity.py --samples 2000
 ```
 
 ### Phase 1 — how to run
@@ -60,10 +61,10 @@ python3 race-engineer/scripts/run_integrity.py --samples 2000
 Same board → pit-next-lap score (see package README for sample output).
 
 ```bash
-# one-time: python3 -m venv race-engineer/.venv && race-engineer/.venv/bin/pip install -r race-engineer/requirements.txt
-race-engineer/.venv/bin/python race-engineer/scripts/train_pit_baseline.py
-race-engineer/.venv/bin/python race-engineer/scripts/score_pit_sample.py --year 2024 --name-contains British --driver-id 1 --lap 22
-race-engineer/.venv/bin/python race-engineer/scripts/eval_pit_baseline.py
+# one-time: python3 -m venv f1-pitwall/.venv && f1-pitwall/.venv/bin/pip install -r f1-pitwall/requirements.txt
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/train_pit_baseline.py
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/score_pit_sample.py --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/eval_pit_baseline.py
 ```
 
 ### Phase 2 — how to run
@@ -72,15 +73,15 @@ Same board → structured pit/stay JSON (see package README).
 
 ```bash
 # offline / CI (rule-based stand-in)
-race-engineer/.venv/bin/python race-engineer/scripts/decide_once.py --backend heuristic --year 2024 --name-contains British --driver-id 1 --lap 22
-race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --backend heuristic --samples 150
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/decide_once.py --backend heuristic --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/run_crew_chief_eval.py --backend heuristic --samples 150
 
 # LLM (requires OPENAI_API_KEY)
 export OPENAI_API_KEY=...
-race-engineer/.venv/bin/python race-engineer/scripts/run_crew_chief_eval.py --backend openai --samples 150
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/run_crew_chief_eval.py --backend openai --samples 150
 
 # tests
-race-engineer/.venv/bin/python -m unittest discover -s race-engineer/tests -v
+f1-pitwall/.venv/bin/python -m unittest discover -s f1-pitwall/tests -v
 ```
 
 ### Phase 3 — how to run
@@ -88,21 +89,21 @@ race-engineer/.venv/bin/python -m unittest discover -s race-engineer/tests -v
 Same board → tools then decision (see package README).
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/decide_once_tools.py --backend heuristic_tools --year 2024 --name-contains British --driver-id 1 --lap 22
-race-engineer/.venv/bin/python race-engineer/scripts/run_tools_eval.py --backend heuristic_tools --samples 150
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/decide_once_tools.py --backend heuristic_tools --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/run_tools_eval.py --backend heuristic_tools --samples 150
 
 # LLM tools (requires OPENAI_API_KEY)
 export OPENAI_API_KEY=...
-race-engineer/.venv/bin/python race-engineer/scripts/run_tools_eval.py --backend openai_tools --samples 150
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/run_tools_eval.py --backend openai_tools --samples 150
 ```
 
 ### Phase 4 — how to run
 
-Next-lap pace model (Hamilton board) in [`race-engineer/README.md`](race-engineer/README.md).
+Next-lap pace model (Hamilton board) in [`f1-pitwall/README.md`](f1-pitwall/README.md).
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/train_lap_deg.py
-race-engineer/.venv/bin/python race-engineer/scripts/predict_lap_deg.py --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/train_lap_deg.py
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/predict_lap_deg.py --year 2024 --name-contains British --driver-id 1 --lap 22
 ```
 
 ### Phase 5 — how to run
@@ -110,8 +111,8 @@ race-engineer/.venv/bin/python race-engineer/scripts/predict_lap_deg.py --year 2
 Monte Carlo strategy cards (same Hamilton board):
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
-race-engineer/.venv/bin/python race-engineer/scripts/eval_sim.py --samples 80
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/eval_sim.py --samples 80
 ```
 
 ### Phase 6 — how to run
@@ -121,8 +122,8 @@ mandatory pit: `stay_to_finish` dropped from sim when `pit_stops=0`; prompts
 include the same rule (`race_engineer/racing_rules.py`).
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/decide_once_sim.py --backend heuristic_sim --year 2024 --name-contains British --driver-id 1 --lap 22
-race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/decide_once_sim.py --backend heuristic_sim --year 2024 --name-contains British --driver-id 1 --lap 22
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/eval_sim_agent.py --backend heuristic_sim --samples 80
 ```
 
 ### Phase 7 — how to run
@@ -130,26 +131,37 @@ race-engineer/.venv/bin/python race-engineer/scripts/eval_sim_agent.py --backend
 Full-race lap-by-lap replay with pit-wall memory surfaced in the Phase 6 prompt:
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1
-race-engineer/.venv/bin/python race-engineer/scripts/eval_memory.py --backend heuristic_sim
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/eval_memory.py --backend heuristic_sim
 ```
 
 ### Phase 8 — how to run
 
-Full-race harness on the frozen set with **two leaderboards** (pit-next vs sim-plan timing). **Contract:** historical board + advisory engineer — no counterfactual lap physics if the driver ignores a box call. See [`race-engineer/README.md`](race-engineer/README.md).
+Full-race harness on the frozen set with **two leaderboards** (pit-next vs sim-plan timing). **Contract:** historical board + advisory engineer — no counterfactual lap physics if the driver ignores a box call. See [`f1-pitwall/README.md`](f1-pitwall/README.md).
 
 ```bash
-race-engineer/.venv/bin/python race-engineer/scripts/run_harness.py \
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/run_harness.py \
   --models hgb,heuristic_sim,heuristic_crew,pit_next_sim --tolerance 2
 ```
 
-Metrics: [`pit_baseline/metrics.json`](race-engineer/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](race-engineer/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](race-engineer/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](race-engineer/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](race-engineer/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](race-engineer/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](race-engineer/artifacts/memory/metrics.json), [`eval/metrics.json`](race-engineer/artifacts/eval/metrics.json).
+### Phase 9 — how to run
 
-Code: [`race-engineer/`](race-engineer/).
+Strategy (sim card choice + memory) then Race Engineer radio (`driver_message` only).
+Radio cannot override action or write memory. Default radio is deterministic
+(`RACE_ENGINEER_RADIO=heuristic`); use `openai` to iterate radio independently.
+
+```bash
+f1-pitwall/.venv/bin/python f1-pitwall/scripts/decide_once_sim.py \
+  --backend heuristic_sim --radio heuristic --year 2024 --name-contains British --driver-id 1 --lap 22
+```
+
+Metrics: [`pit_baseline/metrics.json`](f1-pitwall/artifacts/pit_baseline/metrics.json), [`crew_chief/metrics.json`](f1-pitwall/artifacts/crew_chief/metrics.json), [`tools/metrics.json`](f1-pitwall/artifacts/tools/metrics.json), [`lap_deg/metrics.json`](f1-pitwall/artifacts/lap_deg/metrics.json), [`sim/metrics.json`](f1-pitwall/artifacts/sim/metrics.json), [`sim_agent/metrics.json`](f1-pitwall/artifacts/sim_agent/metrics.json), [`memory/metrics.json`](f1-pitwall/artifacts/memory/metrics.json), [`eval/metrics.json`](f1-pitwall/artifacts/eval/metrics.json).
+
+Code: [`f1-pitwall/`](f1-pitwall/).
 
 ## Legacy notebooks
 
 - [`lap-times/`](lap-times/) — lap-time ML experiments  
 - [`radio/`](radio/) — radio message sentiment  
 
-These remain independent of the race-engineer package.
+These remain independent of the f1-pitwall project.
