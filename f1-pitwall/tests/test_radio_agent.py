@@ -53,7 +53,7 @@ class TestRadioAgent(unittest.TestCase):
         self.assertEqual(rewritten.rationale, decision.rationale)
         self.assertEqual(result.radio_backend, "heuristic_radio")
         self.assertTrue(rewritten.driver_message)
-        self.assertIn("Stay out", rewritten.driver_message)
+        self.assertIn("Push", rewritten.driver_message)
         self.assertIn("driver_message", rewritten.to_dict())
 
     def test_passthrough_keeps_strategy_radio(self):
@@ -144,12 +144,108 @@ class TestRadioAgent(unittest.TestCase):
 
     def test_agents_do_not_import_each_other(self):
         import race_engineer.radio as radio_mod
+        import race_engineer.radio_heuristic as radio_heur_mod
         import strategy_engineer.strategy as strat_mod
 
         radio_src = Path(radio_mod.__file__).read_text(encoding="utf-8")
+        radio_heur_src = Path(radio_heur_mod.__file__).read_text(encoding="utf-8")
         strat_src = Path(strat_mod.__file__).read_text(encoding="utf-8")
         self.assertNotIn("strategy_engineer", radio_src)
+        self.assertNotIn("strategy_engineer", radio_heur_src)
         self.assertNotIn("race_engineer", strat_src)
+        # LLM module should not embed heuristic compose logic.
+        self.assertNotIn("def compose_situation_radio", radio_src)
+        self.assertNotIn("class HeuristicRadioBackend", radio_src)
+
+    def test_situation_block_in_prompt(self):
+        from race_engineer.radio import build_radio_user_prompt
+        from race_engineer.situation import build_radio_situation
+
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 14)
+        sit = build_radio_situation(state, self.replay)
+        prompt = build_radio_user_prompt(
+            state,
+            action="stay",
+            tyre=None,
+            push="high",
+            situation=sit,
+        )
+        self.assertIn("Recent race context", prompt)
+        self.assertTrue(sit.lines)
+
+    def test_situation_detects_stop_and_pressure(self):
+        from race_engineer.situation import build_radio_situation
+
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        # Context reports objective stop/board facts; it does not interpret them.
+        state = self.replay.get_state(1052, 1, 13)
+        sit = build_radio_situation(state, self.replay)
+        joined = " ".join(sit.lines)
+        self.assertIn("pitted", joined)
+        self.assertIn("Current gaps", joined)
+
+        late = self.replay.get_state(1052, 1, 55)
+        late_sit = build_radio_situation(late, self.replay)
+        late_joined = " ".join(late_sit.lines)
+        self.assertIn("current P1", late_joined)
+        self.assertIn("Previous lap", late_joined)
+
+    def test_heuristic_radio_is_minimal_fallback(self):
+        from race_engineer.radio import HeuristicRadioBackend
+
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        decision = CrewChiefDecision(
+            action="stay",
+            tyre=None,
+            push="high",
+            reason="Stay.",
+            rationale="mean_finish_pos=3.0",
+        )
+        radio = HeuristicRadioBackend()
+        state = self.replay.get_state(1052, 1, 15)
+        msg = radio.compose(state, decision, replay=self.replay)
+        self.assertIn("Push", msg)
+        self.assertNotIn("Stay out", msg)
+        self.assertLessEqual(len(msg), 120)
+
+    def test_prompt_gives_llm_raw_deltas_and_pit_events(self):
+        from race_engineer.radio import build_radio_user_prompt
+        from race_engineer.situation import build_radio_situation
+
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 14)
+        situation = build_radio_situation(state, self.replay)
+        prompt = build_radio_user_prompt(
+            state,
+            action="stay",
+            tyre=None,
+            push="high",
+            situation=situation,
+        )
+        self.assertIn("Previous lap", prompt)
+        self.assertIn("Position changed", prompt)
+        self.assertIn("pitted", prompt)
+        self.assertNotIn("Pit window: OPEN", prompt)
+        self.assertNotIn("Undercut threat", prompt)
+
+    def test_apply_radio_passes_replay(self):
+        decision = CrewChiefDecision(
+            action="stay",
+            tyre=None,
+            push="med",
+            reason="Stay.",
+            rationale="mean_finish_pos=2.0",
+        )
+        rewritten, _ = apply_radio(
+            self.state, decision, HeuristicRadioBackend(), replay=self.replay
+        )
+        self.assertEqual(rewritten.action, "stay")
+        self.assertTrue(rewritten.driver_message)
 
 
 if __name__ == "__main__":

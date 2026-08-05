@@ -1,7 +1,9 @@
-"""Phase 9: Race Engineer radio agent (presentation only).
+"""Phase 9: Race Engineer radio LLM (presentation only).
 
 Takes a Strategy decision + board state and returns driver_message.
 Must never change action / tyre / push / rationale or write memory.
+
+Heuristic / offline fallback lives in ``radio_heuristic.py``.
 """
 
 from __future__ import annotations
@@ -11,38 +13,40 @@ import os
 import re
 from typing import Any, Protocol
 
+from race_engineer.radio_heuristic import (
+    HeuristicRadioBackend,
+    PassthroughRadioBackend,
+)
+from race_engineer.situation import RadioSituation, build_radio_situation
 from shared.decision import (
     Action,
     CrewChiefDecision,
     PushLevel,
     TyreChoice,
-    compose_driver_message,
 )
 from shared.messages import RadioResult
 from shared.state import RaceState
 
-# Authentic pit-wall radio patterns (gap, box, push, manage) — no driver names.
+# Minimal style guidance; the model already knows modern F1 radio conventions.
 RADIO_STYLE_GUIDE = """
-Radio style for driver_message (≤120 chars, engineer-to-driver):
-- Pit: "Box, box." / "Box this lap, hard." / "Box this lap, medium." ("this lap" = upcoming lap, board lap+1).
-- Stay: "Stay out." / "Stay out, push." / "Stay out, gap behind one point six."
-- Gap ahead: "Push, gap ahead eight tenths." / "Gap ahead one point two." / "Push now."
-- Gap behind / undercut: "Stay out, car behind one point six." / "Push, undercut threat."
-- Tyres: "Manage the tyres." / "Tyres are hot." / "Fronts are overheating." / "Lift and coast."
-- Safety Car window: "Box, safety car window, medium." / "Stay out under safety car."
+Sound like a modern F1 race engineer: brief, calm, operational, and aware of
+the unfolding race rather than narrating a snapshot.
 
-Use real gap values from the board, spoken naturally:
-- 0.8 → "eight tenths"
-- 1.2 → "one point two"
-- 2.0 → "two seconds"
+Use your racing knowledge to infer the useful message from objective context:
+chasing or being chased, position change, a recent stop, an undercut/cover
+sequence, tyre management, or late-race defense. Mention at most one main idea.
 
-Keep messages short, calm, and operational. No driver or team names. No explanations.
-Vary phrasing lap to lap — same decision can use different radio wording.
+"Stay out" is a pit-window instruction, not a greeting. Use it only when a stop
+is genuinely live from the context (for example safety car, recent rival stop,
+old tyres, or an active strategy window). Otherwise give the useful status or
+instruction directly.
+
+Speak gaps naturally ("eight tenths", "one point two"). Do not invent facts.
 """
 
 RADIO_SYSTEM_PROMPT = """You are the F1 race engineer on team radio.
 Strategy has already decided pit/stay, tyre, and push. Your only job is the
-driver radio call — concise, calm, operational.
+driver radio call. Use your knowledge of modern F1 strategy and radio.
 
 Reply with ONLY a JSON object (no markdown):
 {
@@ -51,6 +55,9 @@ Reply with ONLY a JSON object (no markdown):
 
 Rules:
 - Reflect the given action / tyre / push. Do not invent a different plan.
+- Ground every factual claim in the board or recent context.
+- Infer what matters; do not mechanically repeat every supplied fact.
+- Keep it to one short radio transmission (≤120 chars).
 - Do not name drivers, teams, or race events.
 - No option letters, no sim dumps, no explanations.
 
@@ -64,6 +71,7 @@ def build_radio_user_prompt(
     tyre: TyreChoice,
     push: PushLevel,
     reason: str = "",
+    situation: RadioSituation | None = None,
 ) -> str:
     board = state.pit_wall_view(anonymize=True)
     tyre_s = tyre if tyre is not None else "null"
@@ -79,6 +87,10 @@ def build_radio_user_prompt(
     ]
     if reason.strip():
         lines.append(f"  reason: {reason.strip()[:100]}")
+    sit = situation or RadioSituation()
+    block = sit.prompt_block()
+    if block:
+        lines.extend(["", block])
     lines.append("")
     lines.append("Compose driver_message only.")
     return "\n".join(lines)
@@ -108,41 +120,9 @@ class RadioBackend(Protocol):
         self,
         state: RaceState,
         decision: CrewChiefDecision,
+        *,
+        replay: Any | None = None,
     ) -> str: ...
-
-
-class HeuristicRadioBackend:
-    """Deterministic radio from action / tyre / push + board gaps."""
-
-    name = "heuristic_radio"
-
-    def compose(
-        self,
-        state: RaceState,
-        decision: CrewChiefDecision,
-    ) -> str:
-        return compose_driver_message(
-            state,
-            action=decision.action,
-            tyre=decision.tyre,
-            push=decision.push,
-        )[:120]
-
-
-class PassthroughRadioBackend:
-    """A/B: keep pre-filled radio if present; else heuristic compose."""
-
-    name = "passthrough"
-
-    def compose(
-        self,
-        state: RaceState,
-        decision: CrewChiefDecision,
-    ) -> str:
-        msg = (decision.driver_message or "").strip()
-        if msg:
-            return msg[:120]
-        return HeuristicRadioBackend().compose(state, decision)
 
 
 class OpenAIRadioBackend:
@@ -188,19 +168,22 @@ class OpenAIRadioBackend:
         self,
         state: RaceState,
         decision: CrewChiefDecision,
+        *,
+        replay: Any | None = None,
     ) -> str:
+        situation = build_radio_situation(state, replay)
         user = build_radio_user_prompt(
             state,
             action=decision.action,
             tyre=decision.tyre,
             push=decision.push,
             reason=decision.reason,
+            situation=situation,
         )
         messages: list[dict[str, str]] = [
             {"role": "system", "content": RADIO_SYSTEM_PROMPT},
             {"role": "user", "content": user},
         ]
-        last_err: Exception | None = None
         for _ in range(self.max_retries + 1):
             try:
                 resp = self._client.chat.completions.create(
@@ -212,7 +195,6 @@ class OpenAIRadioBackend:
                 raw = resp.choices[0].message.content or ""
                 return parse_radio_message(raw)
             except Exception as exc:  # noqa: BLE001
-                last_err = exc
                 messages.append(
                     {
                         "role": "user",
@@ -223,18 +205,20 @@ class OpenAIRadioBackend:
                         ),
                     }
                 )
-        return self.fallback.compose(state, decision)
+        return self.fallback.compose(state, decision, replay=replay)
 
 
 def apply_radio(
     state: RaceState,
     decision: CrewChiefDecision,
     radio: RadioBackend,
+    *,
+    replay: Any | None = None,
 ) -> tuple[CrewChiefDecision, RadioResult]:
     """Overwrite driver_message only; strategy fields stay identical."""
-    msg = radio.compose(state, decision).strip()[:120]
+    msg = radio.compose(state, decision, replay=replay).strip()[:120]
     if not msg:
-        msg = HeuristicRadioBackend().compose(state, decision)
+        msg = HeuristicRadioBackend().compose(state, decision, replay=replay)
     result = RadioResult(
         driver_message=msg,
         radio_backend=radio.name,
@@ -263,7 +247,7 @@ def get_radio_backend(
     *,
     default_headers: dict[str, str] | None = None,
 ) -> RadioBackend:
-    raw = (name or os.environ.get("RACE_ENGINEER_RADIO", "heuristic")).strip().lower()
+    raw = (name or os.environ.get("RACE_ENGINEER_RADIO", "auto")).strip().lower()
     if raw in {"heuristic", "heuristic_radio", "compose"}:
         return HeuristicRadioBackend()
     if raw in {"passthrough", "none", "off", "strategy"}:

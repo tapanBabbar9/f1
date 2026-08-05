@@ -20,12 +20,14 @@ def apply_radio_decision(
     state: RaceState,
     decision: CrewChiefDecision,
     radio: RadioBackend | None = None,
+    *,
+    replay: Any | None = None,
 ) -> tuple[CrewChiefDecision, RadioResult]:
     """Hand a read-only Strategy plan to Race Engineer; assert plan unchanged."""
     before = plan_key_from_decision(decision)
     _ = brief_from_decision(decision)  # frozen A2A payload
     radio = radio or get_radio_backend()
-    rewritten, result = apply_radio(state, decision, radio)
+    rewritten, result = apply_radio(state, decision, radio, replay=replay)
     after = plan_key_from_decision(rewritten)
     if after != before:
         raise RuntimeError(
@@ -39,9 +41,13 @@ def attach_radio(
     state: RaceState,
     sd: SimAgentDecision,
     radio: RadioBackend,
+    *,
+    replay: Any | None = None,
 ) -> SimAgentDecision:
     """Post-pass after Strategy (+ memory) are final."""
-    new_decision, radio_result = apply_radio_decision(state, sd.decision, radio)
+    new_decision, radio_result = apply_radio_decision(
+        state, sd.decision, radio, replay=replay
+    )
     traj = sd.trajectory
     if traj is not None:
         traj = {
@@ -100,7 +106,7 @@ class MultiAgentSimBackend(SimAwareBackend):
         memory: RaceMemoryStore | None = None,
     ) -> SimAgentDecision:
         sd = self.strategy.decide_with_sims(state, memory=memory)
-        return attach_radio(state, sd, self.radio)
+        return attach_radio(state, sd, self.radio, replay=self.replay)
 
 
 def get_sim_backend(
