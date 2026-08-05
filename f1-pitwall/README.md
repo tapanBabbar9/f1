@@ -230,6 +230,8 @@ Committed scoreboard: `artifacts/lap_deg/metrics.json`.
 
 When `pit_stops so far = 0` on a dry compound, `stay_to_finish` **is omitted** from the option menu (mandatory pit still owed).
 
+**Known issue — sliding stop:** options are a *relative* grid (`DEFAULT_STAY_NS = 0, 3, 5, 8` → `pit_next_lap` / `stay_N_then_pit`). `planned_pit_lap = current_lap + N`, so re-picking the same label each lap advances the absolute stop by one (e.g. L9 → L10 → … → L15). When the longest stay option keeps winning (common while deg/wear makes “later” look free), the plan drifts even though the engineer says “maintaining plan.” Fix later: absolute continuity card + honest within-stint wear (not a prompt-only patch). See also Phase 7.
+
 ```bash
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/eval_sim.py --samples 80
@@ -253,6 +255,8 @@ Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, 
 ## Phase 7 — memory across laps
 
 **What it does:** persist pit-wall instructions keyed by `(race, driver)` each lap; inject prior plan into the Phase 6 user prompt; support full-race replay (not just single-lap eval samples). Metrics: flip-flop rate (pit/stay reversal without material board/sim change) and regret delta vs memory-off.
+
+**Known issue — sliding stop (with Phase 5):** memory stores the option *label* (`stay_8_then_pit`), not the absolute `planned_pit_lap`. Prompt lines like `L1-6: stay (option D, stay_8_then_pit)` look like plan continuity while the target lap drifts. Continuity should surface the committed stop lap (e.g. target L13) and score a shrinking-offset card against it.
 
 ```bash
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1

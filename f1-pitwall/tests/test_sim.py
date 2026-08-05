@@ -128,7 +128,48 @@ class TestSim(unittest.TestCase):
             self.skipTest("race 1052 not in dataset")
         state = self.replay.get_state(1052, 1, 15)
         self.assertGreater(state.gap_ahead_ms or 0, 5_000)
-        self.assertEqual(finish_position_board_sanity(1.0, state), float(state.position))
+        held = finish_position_board_sanity(1.0, state)
+        self.assertAlmostEqual(held, float(state.position), delta=0.25)
+
+    def test_board_sanity_is_monotonic(self):
+        """Bounds must not flatten distinct projections into one number."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        state = self.replay.get_state(1052, 1, 15)
+        outs = [finish_position_board_sanity(float(p), state) for p in range(1, 12)]
+        for lo, hi in zip(outs, outs[1:]):
+            self.assertLess(lo, hi, msg=f"non-monotonic: {outs}")
+
+    def test_sim_options_are_rankable(self):
+        """A wear/pace asymmetry once collapsed every option to one E[finish]."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        ties = 0
+        laps = [6, 10, 20, 25, 30, 35, 40]
+        for lap in laps:
+            cards = simulate_strategy_cards(
+                self.replay, self.replay.get_state(1052, 1, lap), n_rolls=64, seed=42
+            )
+            if len({round(c.mean_finish_pos, 3) for c in cards}) == 1:
+                ties += 1
+        self.assertLessEqual(ties, 1, msg=f"{ties}/{len(laps)} laps had all options tied")
+
+    def test_sc_lap_does_not_anchor_green_pace(self):
+        """Under SC the pace anchor must come off a green lap, not the slow lap."""
+        if 1052 not in self.replay._laps:
+            self.skipTest("race 1052 not in dataset")
+        from strategy_engineer.sim import (
+            SimSnapshot,
+            _default_deg,
+            _green_flag_anchor_ms,
+        )
+
+        state = self.replay.get_state(1052, 1, 2)
+        self.assertTrue(state.sc_active)
+        snap = SimSnapshot.from_state(state, 0.0)
+        anchor = _green_flag_anchor_ms(_default_deg(), snap, green_reference_ms=95_000.0)
+        self.assertLess(anchor, state.last_lap_time_ms)
+        self.assertEqual(anchor, 95_000.0)
 
     def test_sim_not_overoptimistic_mid_race(self):
         """At P3 with large gap ahead, E[finish] should stay near board."""

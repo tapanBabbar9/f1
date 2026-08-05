@@ -29,6 +29,10 @@ DEFAULT_STAY_NS = (0, 3, 5, 8)  # 0 = pit next lap
 _SC_LAP_MS_THRESHOLD = 100_000.0
 # Fresh-stint pace gain vs each driver's own green-flag lap (ms).
 _FRESH_TYRE_GAIN_MS = 600.0
+# Tyre wear is modelled as a linear slope fitted over a short probe window, so it
+# must be bounded: extrapolated over a 45-lap stint an unbounded slope reaches
+# tens of seconds per lap and every pit option looks catastrophic.
+_MAX_STINT_DEG_MS = 3_000.0
 # Cap rival jitter so remaining-lap scaling does not swamp ranking.
 _RIVAL_NOISE_LAP_CAP = 12
 # Blend sim E[finish] toward board P when gaps are healthy (front-running).
@@ -38,6 +42,10 @@ _BOARD_BLEND_MAX_GAP_MS = 5_000
 # cushion behind limits positions lost (not race-specific tuning).
 _SANITY_GAP_AHEAD_FLOOR_MS = 1_500
 _SANITY_GAP_BEHIND_CAP_MS = 4_000
+# Board bounds are calibration, not truth: compress the part of a projection that
+# runs past them rather than dropping it, or every option clamps to one number and
+# the oracle has nothing left to rank on.
+_BOARD_CLAMP_COMPRESSION = 0.15
 
 
 @dataclass
@@ -150,6 +158,11 @@ def _default_deg() -> LapDegModel | None:
     return LapDegModel.load(path)
 
 
+def _wear_ms(slope_ms: float, tyre_life: float) -> float:
+    """Linear tyre wear, bounded to a plausible per-stint delta."""
+    return min(max(0.0, slope_ms) * max(0.0, tyre_life), _MAX_STINT_DEG_MS)
+
+
 @dataclass
 class PaceSchedule:
     """
@@ -161,6 +174,10 @@ class PaceSchedule:
     by_compound: dict[float, tuple[float, float]]
     fallback_ms: float
 
+    def wear_slope_ms(self, compound_id: float) -> float:
+        pair = self.by_compound.get(compound_id)
+        return pair[1] if pair is not None else 0.0
+
     def lap_ms(self, snap: SimSnapshot, rng: np.random.Generator, noise_ms: float) -> float:
         if snap.sc_active > 0.5:
             base = max(snap.last_lap_ms, 100_000.0)
@@ -170,7 +187,7 @@ class PaceSchedule:
                 base = self.fallback_ms
             else:
                 intercept, slope = pair
-                base = intercept + slope * snap.tyre_life
+                base = intercept + _wear_ms(slope, snap.tyre_life)
         if noise_ms > 0:
             base = base + float(rng.normal(0.0, noise_ms))
         return max(base, 40_000.0)
@@ -193,13 +210,23 @@ def _probe_ms(deg: LapDegModel, snap: SimSnapshot, tyre_life: float, compound_id
     return float(deg.model.predict(probe.feature_row())[0])
 
 
-def _green_flag_anchor_ms(deg: LapDegModel | None, snap0: SimSnapshot) -> float:
+def _green_flag_anchor_ms(
+    deg: LapDegModel | None,
+    snap0: SimSnapshot,
+    *,
+    green_reference_ms: float | None = None,
+) -> float:
     """Pace anchor for MC rollouts; SC / slow laps must not skew green projection."""
     if (
         snap0.sc_active < 0.5
         and snap0.last_lap_ms < _SC_LAP_MS_THRESHOLD
     ):
         return snap0.last_lap_ms
+    # The board lap is SC-inflated, and the deg model reads last/prev lap times
+    # straight off its feature row, so it extrapolates from the slow lap. A real
+    # green lap from the replay keeps the ego on the same footing as the rivals.
+    if green_reference_ms is not None and green_reference_ms < _SC_LAP_MS_THRESHOLD:
+        return green_reference_ms
     if deg is not None:
         green = SimSnapshot(
             circuit_id=snap0.circuit_id,
@@ -221,13 +248,19 @@ def _green_flag_anchor_ms(deg: LapDegModel | None, snap0: SimSnapshot) -> float:
     return 95_000.0
 
 
-def build_pace_schedule(deg: LapDegModel | None, snap0: SimSnapshot) -> PaceSchedule:
-    anchor_ms = _green_flag_anchor_ms(deg, snap0)
+def build_pace_schedule(
+    deg: LapDegModel | None,
+    snap0: SimSnapshot,
+    *,
+    green_reference_ms: float | None = None,
+) -> PaceSchedule:
+    anchor_ms = _green_flag_anchor_ms(deg, snap0, green_reference_ms=green_reference_ms)
     if deg is None:
         return PaceSchedule(by_compound={}, fallback_ms=anchor_ms)
 
     by_c: dict[float, tuple[float, float]] = {}
-    compounds = {snap0.compound_id, 3.0}  # current + default post-pit HARD
+    post_pit_id = alternate_dry_compound_id(snap0.compound_id)
+    compounds = {snap0.compound_id, post_pit_id}
     green_snap = SimSnapshot(
         circuit_id=snap0.circuit_id,
         lap=snap0.lap,
@@ -252,13 +285,12 @@ def build_pace_schedule(deg: LapDegModel | None, snap0: SimSnapshot) -> PaceSche
         intercept = y0 - slope * life0
         # Anchor current compound so first predicted lap stays near board pace.
         if cid == snap0.compound_id:
-            predicted_now = intercept + slope * snap0.tyre_life
+            predicted_now = intercept + _wear_ms(slope, snap0.tyre_life)
             shift = anchor_ms - predicted_now
             intercept = intercept + shift
-        elif cid == 3.0:
-            # Post-pit HARD: align with fresh-tyre pace used for rival projection.
-            fresh = _fresh_tyre_pace_ms(anchor_ms)
-            intercept = fresh
+        else:
+            # Post-pit stint: align with the fresh-tyre pace used for rivals.
+            intercept = _fresh_tyre_pace_ms(anchor_ms)
             slope = max(slope, 0.0)
         by_c[cid] = (intercept, slope)
     return PaceSchedule(by_compound=by_c, fallback_ms=anchor_ms)
@@ -342,6 +374,14 @@ def _recent_green_pace_ms(
     return float(np.mean(recent)) if recent else 90_000.0
 
 
+def _stint_time_ms(laps: int, pace_ms: float, wear_slope_ms: float) -> float:
+    """Time for `laps` laps whose pace degrades from `pace_ms` at the wear slope."""
+    if laps <= 0:
+        return 0.0
+    wear = sum(_wear_ms(wear_slope_ms, float(i)) for i in range(laps))
+    return laps * pace_ms + wear
+
+
 def _project_driver_finish_ms(
     replay: RaceReplay,
     state: RaceState,
@@ -352,6 +392,8 @@ def _project_driver_finish_ms(
     pace_ms: float,
     post_pit_pace_ms: float,
     pit_loss_ms: float,
+    wear_slope_ms: float = 0.0,
+    sc_surplus_ms: float = 0.0,
 ) -> float:
     """Historical replay projection: rivals follow known future pit laps."""
     if remaining <= 0:
@@ -366,11 +408,12 @@ def _project_driver_finish_ms(
         laps_after = max(0, remaining - laps_before)
         return (
             float(cum)
-            + laps_before * pace_ms
+            + _stint_time_ms(laps_before, pace_ms, wear_slope_ms)
             + pit_loss_ms
-            + laps_after * post_pit_pace_ms
+            + _stint_time_ms(laps_after, post_pit_pace_ms, wear_slope_ms)
+            + sc_surplus_ms
         )
-    return float(cum) + remaining * pace_ms
+    return float(cum) + _stint_time_ms(remaining, pace_ms, wear_slope_ms) + sc_surplus_ms
 
 
 def _fresh_tyre_pace_ms(pre_pit_pace_ms: float) -> float:
@@ -382,10 +425,16 @@ def rival_finish_times_ms(
     state: RaceState,
     *,
     pit_loss_ms: float = DEFAULT_PIT_LOSS_MS,
+    wear_slope_ms: float = 0.0,
+    sc_surplus_ms: float = 0.0,
 ) -> list[float]:
     """
     Rival finish estimates: each driver's green-flag pace plus known future pit
     laps and a driver-specific fresh-tyre offset. Excludes the ego driver.
+
+    Rivals are projected on green pace with the same wear slope the ego rollout
+    uses; any remaining SC laps are added on top as a shared surplus. Both sides
+    must degrade alike or the ranking measures model asymmetry, not strategy.
     """
     cumul = replay._cumulative_times(state.race_id, state.lap)
     remaining = max(0, state.total_laps - state.lap)
@@ -400,7 +449,7 @@ def rival_finish_times_ms(
             did,
             state.lap,
             total,
-            board_sc_active=state.sc_active,
+            board_sc_active=False,
         )
         post_pit = _fresh_tyre_pace_ms(pace)
         out.append(
@@ -413,6 +462,8 @@ def rival_finish_times_ms(
                 pace_ms=pace,
                 post_pit_pace_ms=post_pit,
                 pit_loss_ms=pit_loss_ms,
+                wear_slope_ms=wear_slope_ms,
+                sc_surplus_ms=sc_surplus_ms,
             )
         )
     return out
@@ -423,6 +474,21 @@ def finish_position(ego_finish_ms: float, rival_finishes: Sequence[float]) -> in
     return worse + 1
 
 
+def _soft_clamp(
+    value: float,
+    *,
+    floor: float | None = None,
+    ceiling: float | None = None,
+) -> float:
+    """Bound a projection while keeping it monotonic in the raw input."""
+    out = value
+    if ceiling is not None and out > ceiling:
+        out = ceiling + (out - ceiling) * _BOARD_CLAMP_COMPRESSION
+    if floor is not None and out < floor:
+        out = floor - (floor - out) * _BOARD_CLAMP_COMPRESSION
+    return out
+
+
 def finish_position_board_blend(raw_pos: int, state: RaceState) -> float:
     """Pull projected finish toward board P when gaps support a front-running read."""
     if state.position > 5:
@@ -431,7 +497,7 @@ def finish_position_board_blend(raw_pos: int, state: RaceState) -> float:
         return float(raw_pos)
     # Do not project a front-runner to the back unless tyres truly cliff.
     max_drop = 3 + (state.stint_age_laps // 3)
-    capped = min(raw_pos, state.position + max(3, max_drop))
+    capped = _soft_clamp(float(raw_pos), ceiling=state.position + max(3, max_drop))
     w = _BOARD_BLEND_WEIGHT
     if capped > state.position + 4:
         w = min(0.55, w + 0.15)
@@ -444,14 +510,14 @@ def finish_position_board_sanity(pos: float, state: RaceState) -> float:
     p = float(state.position)
     out = float(pos)
     if state.gap_ahead_ms is not None and state.gap_ahead_ms > _SANITY_GAP_AHEAD_FLOOR_MS:
-        out = max(out, p)
+        out = _soft_clamp(out, floor=p)
     if state.gap_behind_ms is not None and state.gap_behind_ms > _SANITY_GAP_BEHIND_CAP_MS:
         laps_left = max(1, state.total_laps - state.lap)
         max_drop = min(
             3.0,
             1.0 + state.gap_behind_ms / 10_000.0 + laps_left / 40.0,
         )
-        out = min(out, p + max_drop)
+        out = _soft_clamp(out, ceiling=p + max_drop)
     # Stable train: large gaps both sides → finish near current position.
     if (
         state.gap_ahead_ms is not None
@@ -459,8 +525,7 @@ def finish_position_board_sanity(pos: float, state: RaceState) -> float:
         and state.gap_behind_ms is not None
         and state.gap_behind_ms > 4_000
     ):
-        out = min(out, p + 2.0)
-        out = max(out, p)
+        out = _soft_clamp(out, floor=p, ceiling=p + 2.0)
     return max(1.0, min(float(state.drivers_on_track), out))
 
 
@@ -609,17 +674,29 @@ def simulate_strategy_cards(
     cumul = replay._cumulative_times(state.race_id, state.lap)
     ego_cum = float(cumul.get(state.driver_id, state.cumulative_time_ms))
     snap0 = SimSnapshot.from_state(state, ego_cum)
-    pace = build_pace_schedule(deg, snap0)
+    ego_green_ms = _recent_green_pace_ms(
+        replay,
+        state.race_id,
+        state.driver_id,
+        state.lap,
+        state.total_laps,
+        board_sc_active=False,
+    )
+    pace = build_pace_schedule(deg, snap0, green_reference_ms=ego_green_ms)
     remaining = max(0, state.total_laps - state.lap)
     effective_pit_loss = (
         DEFAULT_SC_PIT_LOSS_MS if state.sc_active else pit_loss_ms
     )
+    sc_left = _laps_until_sc_end(replay, state.race_id, state.lap, state.total_laps)
+    sc_lap_ms = max(snap0.last_lap_ms, _SC_LAP_MS_THRESHOLD) if sc_left > 0 else 0.0
     rivals = rival_finish_times_ms(
         replay,
         state,
         pit_loss_ms=effective_pit_loss,
+        wear_slope_ms=pace.wear_slope_ms(snap0.compound_id),
+        sc_surplus_ms=min(sc_left, remaining)
+        * max(0.0, sc_lap_ms - pace.fallback_ms),
     )
-    sc_left = _laps_until_sc_end(replay, state.race_id, state.lap, state.total_laps)
     rival_noise = noise_ms * math.sqrt(min(remaining, _RIVAL_NOISE_LAP_CAP))
     must_pit = mandatory_dry_pit_pending(state)
     if options is not None:
