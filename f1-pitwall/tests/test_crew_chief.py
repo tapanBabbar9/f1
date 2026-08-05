@@ -30,33 +30,42 @@ class TestCrewChief(unittest.TestCase):
         d = parse_decision(
             '{"action":"pit","tyre":"medium","push":"low",'
             '"reason":"Tyres at cliff, box for mediums.",'
-            '"driver_message":"Box box, box this lap, medium.",'
             '"rationale":"Tyres old."}'
         )
         self.assertEqual(d.action, "pit")
         self.assertEqual(d.tyre, "medium")
         self.assertEqual(d.pit_next, 1)
-        self.assertIn("Box", d.driver_message)
+        self.assertIsNone(d.driver_message)
+        self.assertNotIn("driver_message", d.to_dict())
 
     def test_parse_stay_null_tyre(self):
         d = parse_decision(
             '{"action":"stay","tyre":null,"push":"high",'
             '"reason":"Gap manageable, push.",'
-            '"driver_message":"Stay out. Push, gap ahead eight tenths.",'
             '"rationale":"Gap manageable."}'
         )
         self.assertEqual(d.action, "stay")
         self.assertIsNone(d.tyre)
 
-    def test_parse_fallback_reason_and_radio(self):
+    def test_parse_strips_radio_and_fills_reason(self):
         state = self.replay.get_state(1132, 1, 22)
         d = parse_decision(
-            '{"action":"stay","tyre":null,"push":"med","rationale":"Stint viable."}',
+            '{"action":"stay","tyre":null,"push":"med",'
+            '"driver_message":"Stay out. Push now.",'
+            '"rationale":"Stint viable."}',
             state=state,
         )
         self.assertTrue(d.reason)
-        self.assertTrue(d.driver_message)
-        self.assertIn("Stay out", d.driver_message)
+        self.assertIsNone(d.driver_message)
+        self.assertNotIn("driver_message", d.to_dict())
+
+    def test_heuristic_omits_radio(self):
+        state = self.replay.get_state(1132, 1, 22)
+        d = HeuristicBackend().decide(state)
+        self.assertIsNone(d.driver_message)
+        self.assertNotIn("driver_message", d.to_dict())
+        self.assertTrue(d.reason)
+        self.assertTrue(d.rationale)
 
     def test_parse_rejects_pit_without_tyre(self):
         with self.assertRaises(ValueError):

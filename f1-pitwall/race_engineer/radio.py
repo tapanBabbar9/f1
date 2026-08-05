@@ -130,7 +130,7 @@ class HeuristicRadioBackend:
 
 
 class PassthroughRadioBackend:
-    """Keep Strategy's driver_message (A/B / regression)."""
+    """A/B: keep pre-filled radio if present; else heuristic compose."""
 
     name = "passthrough"
 
@@ -246,8 +246,8 @@ def apply_radio(
         tyre=decision.tyre,
         push=decision.push,
         reason=decision.reason,
-        driver_message=msg,
         rationale=decision.rationale,
+        driver_message=msg,
     )
     # Guard: radio must not mutate strategy fields.
     assert rewritten.action == decision.action

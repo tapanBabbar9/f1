@@ -126,8 +126,8 @@ class HeuristicToolBackend(ToolAwareBackend):
             tyre=base.tyre,
             push=base.push,
             reason=base.reason,
-            driver_message=base.driver_message,
             rationale=rationale,
+            driver_message=base.driver_message,
         )
         faith = faithfulness_score(decision.rationale, results)
         return ToolDecision(

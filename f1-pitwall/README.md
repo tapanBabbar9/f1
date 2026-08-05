@@ -286,9 +286,10 @@ Outputs: `artifacts/eval/metrics.json` (`leaderboard_pit_next`, `leaderboard_sim
 
 ## Phase 9 — multi-agent (Strategy + radio)
 
-**What it does:** A2A handoff — `strategy_engineer` owns the plan; `shared.pipeline`
-passes a frozen `StrategyBrief` to `race_engineer` radio (read-only). Radio only
-emits `driver_message`. Packages never import each other; both use `shared`.
+**What it does:** A2A handoff — `strategy_engineer` owns the plan (no `driver_message`
+key); `shared.pipeline` passes a frozen `StrategyBrief` to `race_engineer` radio
+(read-only). Radio is the **only** writer of `driver_message`. Packages never import
+each other; both use `shared`.
 
 ```text
 Strategy (openai_sim / heuristic_sim) → chosen_option_id, action, rationale, memory

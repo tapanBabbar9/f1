@@ -32,11 +32,15 @@ class CrewChiefDecision:
     tyre: TyreChoice
     push: PushLevel
     reason: str
-    driver_message: str
     rationale: str
+    # Set only by Phase 9 Race Engineer; omitted from Strategy to_dict when unset.
+    driver_message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        if out.get("driver_message") is None:
+            out.pop("driver_message", None)
+        return out
 
     @property
     def pit_next(self) -> int:
@@ -97,7 +101,7 @@ def compose_driver_message(
     tyre: TyreChoice,
     push: PushLevel,
 ) -> str:
-    """Short engineer radio call (box / stay / gap / push / manage)."""
+    """Heuristic radio helper for Phase 9 Race Engineer (not Strategy)."""
     if action == "pit":
         compound = tyre or "medium"
         if state and state.sc_active:
@@ -133,28 +137,24 @@ def compose_driver_message(
 def finalize_decision(
     state: RaceState | None, decision: CrewChiefDecision
 ) -> CrewChiefDecision:
-    """Fill reason / driver_message when the model omitted them."""
+    """Fill reason when omitted. Does not set driver_message (Phase 9 only)."""
+    _ = state  # kept for call-site compatibility; radio uses board in Phase 9
     reason = decision.reason.strip() or compose_reason(
         action=decision.action,
         tyre=decision.tyre,
         push=decision.push,
         rationale=decision.rationale,
     )
-    driver_message = decision.driver_message.strip() or compose_driver_message(
-        state,
-        action=decision.action,
-        tyre=decision.tyre,
-        push=decision.push,
-    )
-    if reason == decision.reason and driver_message == decision.driver_message:
+    # Strip any sneaked-in radio; Race Engineer owns driver_message.
+    if reason == decision.reason and decision.driver_message is None:
         return decision
     return CrewChiefDecision(
         action=decision.action,
         tyre=decision.tyre,
         push=decision.push,
         reason=reason,
-        driver_message=driver_message,
         rationale=decision.rationale,
+        driver_message=None,
     )
 
 
@@ -210,9 +210,7 @@ def parse_decision(raw: str, *, state: RaceState | None = None) -> CrewChiefDeci
     if not rationale:
         raise ValueError("rationale is required")
     reason = str(data.get("reason") or data.get("one_line_reason") or "").strip()
-    driver_message = str(
-        data.get("driver_message") or data.get("radio") or ""
-    ).strip()
+    # Ignore driver_message / radio if the model sneaks them in (Phase 9 owns radio).
 
     if action == "stay" and tyre is not None:
         # Soft-correct common model slip: stay with a tyre suggestion.
@@ -225,7 +223,6 @@ def parse_decision(raw: str, *, state: RaceState | None = None) -> CrewChiefDeci
         tyre=tyre,
         push=push,
         reason=reason,
-        driver_message=driver_message,
         rationale=rationale,
     )
     return finalize_decision(state, draft)

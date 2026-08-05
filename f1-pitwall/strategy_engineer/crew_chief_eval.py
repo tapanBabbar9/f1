@@ -145,7 +145,6 @@ def run_crew_chief_eval(
                 "tyre": decision.tyre,
                 "push": decision.push,
                 "reason": decision.reason,
-                "driver_message": decision.driver_message,
                 "rationale": decision.rationale,
                 "schema_valid": True,
             }

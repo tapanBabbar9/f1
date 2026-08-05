@@ -11,7 +11,6 @@ from shared.decision import (
     CrewChiefDecision,
     UPCOMING_LAP_DECISION,
     build_user_prompt,
-    compose_driver_message,
     compose_reason,
     finalize_decision,
     parse_decision,
@@ -266,7 +265,6 @@ def build_sim_decision_from_choice(
     tool_results: list[ToolResult],
     rationale: str | None = None,
     reason: str | None = None,
-    driver_message: str | None = None,
     trajectory: dict[str, Any] | None = None,
     current_compound: str | None = None,
     state: RaceState | None = None,
@@ -310,12 +308,6 @@ def build_sim_decision_from_choice(
             tyre=tyre,
             push=push,  # type: ignore[arg-type]
             rationale=rationale,
-        ),
-        driver_message=driver_message or compose_driver_message(
-            state,
-            action=action,  # type: ignore[arg-type]
-            tyre=tyre,
-            push=push,  # type: ignore[arg-type]
         ),
         rationale=rationale,
     )
@@ -525,7 +517,6 @@ class OpenAISimBackend(SimAwareBackend):
                             tool_results=collected,
                             rationale=decision.rationale,
                             reason=decision.reason,
-                            driver_message=decision.driver_message,
                             trajectory=trajectory,
                             current_compound=state.tyre_compound,
                             state=state,

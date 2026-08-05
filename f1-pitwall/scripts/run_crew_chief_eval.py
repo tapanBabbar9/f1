@@ -184,7 +184,6 @@ def main() -> None:
             "tyre",
             "push",
             "reason",
-            "driver_message",
             "rationale",
             "schema_valid",
         ]

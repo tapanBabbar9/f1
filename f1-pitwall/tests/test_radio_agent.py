@@ -42,7 +42,6 @@ class TestRadioAgent(unittest.TestCase):
             tyre=None,
             push="high",
             reason="Stay and push.",
-            driver_message="Stay out.",
             rationale="Gap ahead is close; mean_finish_pos=2.1.",
         )
         radio = HeuristicRadioBackend()
@@ -55,6 +54,7 @@ class TestRadioAgent(unittest.TestCase):
         self.assertEqual(result.radio_backend, "heuristic_radio")
         self.assertTrue(rewritten.driver_message)
         self.assertIn("Stay out", rewritten.driver_message)
+        self.assertIn("driver_message", rewritten.to_dict())
 
     def test_passthrough_keeps_strategy_radio(self):
         decision = CrewChiefDecision(
@@ -62,13 +62,24 @@ class TestRadioAgent(unittest.TestCase):
             tyre="hard",
             push="low",
             reason="Box now.",
-            driver_message="Box, safety car window, hard.",
             rationale="SC window.",
+            driver_message="Box, safety car window, hard.",
         )
         rewritten, _ = apply_radio(
             self.state, decision, PassthroughRadioBackend()
         )
         self.assertEqual(rewritten.driver_message, decision.driver_message)
+
+    def test_strategy_omits_radio_until_multi_agent(self):
+        strategy = HeuristicSimBackend(self.replay)
+        bare = strategy.decide_with_sims(self.state)
+        self.assertIsNone(bare.decision.driver_message)
+        self.assertNotIn("driver_message", bare.to_dict())
+        multi = MultiAgentSimBackend(strategy, HeuristicRadioBackend())
+        with_radio = multi.decide_with_sims(self.state)
+        self.assertTrue(with_radio.decision.driver_message)
+        self.assertIn("driver_message", with_radio.to_dict())
+        self.assertEqual(with_radio.radio.radio_backend, "heuristic_radio")
 
     def test_multi_agent_does_not_change_card_or_memory(self):
         strategy = HeuristicSimBackend(self.replay)

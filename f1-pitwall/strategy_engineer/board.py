@@ -9,7 +9,6 @@ from shared.decision import (
     UPCOMING_LAP_DECISION,
     CrewChiefDecision,
     build_user_prompt,
-    compose_driver_message,
     compose_reason,
     finalize_decision,
     parse_decision,
@@ -116,12 +115,6 @@ class HeuristicBackend:
                 tyre=tyre,
                 push=push,  # type: ignore[arg-type]
                 rationale=rationale,
-            ),
-            driver_message=compose_driver_message(
-                state,
-                action=action,  # type: ignore[arg-type]
-                tyre=tyre,
-                push=push,  # type: ignore[arg-type]
             ),
             rationale=rationale,
         )
