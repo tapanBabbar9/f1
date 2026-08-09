@@ -5,8 +5,9 @@ Keep this thin — situational interpretation belongs to the radio LLM.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
+from race_engineer.radio_log import RadioCall
 from race_engineer.situation import RadioSituation, build_radio_situation
 from shared.decision import (
     Action,
@@ -105,7 +106,9 @@ class HeuristicRadioBackend:
         decision: CrewChiefDecision,
         *,
         replay: Any | None = None,
+        recent_calls: Sequence[RadioCall] = (),
     ) -> str:
+        _ = recent_calls
         situation = build_radio_situation(state, replay)
         return compose_situation_radio(
             state,
@@ -127,7 +130,9 @@ class PassthroughRadioBackend:
         decision: CrewChiefDecision,
         *,
         replay: Any | None = None,
+        recent_calls: Sequence[RadioCall] = (),
     ) -> str:
+        _ = recent_calls
         msg = (decision.driver_message or "").strip()
         if msg:
             return msg[:120]

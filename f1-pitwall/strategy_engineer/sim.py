@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -24,15 +24,42 @@ DEFAULT_PIT_LOSS_MS = 22_000.0
 DEFAULT_SC_PIT_LOSS_MS = 12_000.0  # lower effective loss under SC
 DEFAULT_NOISE_MS = 400.0  # per-lap Gaussian noise in MC
 DEFAULT_N_ROLLS = 64
-DEFAULT_STAY_NS = (0, 3, 5, 8)  # 0 = pit next lap
+# 0 = pit next lap. The grid must reach past a realistic stop window: if the best
+# stop lies beyond the largest offset, the argmax is always the last card, and
+# re-picking it every lap walks the stop forward one lap at a time.
+DEFAULT_STAY_NS = (0, 3, 5, 8, 12, 18, 25)
 # Lap times above this (ms) are SC-inflated and must not anchor green-flag rollouts.
 _SC_LAP_MS_THRESHOLD = 100_000.0
 # Fresh-stint pace gain vs each driver's own green-flag lap (ms).
 _FRESH_TYRE_GAIN_MS = 600.0
-# Tyre wear is modelled as a linear slope fitted over a short probe window, so it
-# must be bounded: extrapolated over a 45-lap stint an unbounded slope reaches
-# tens of seconds per lap and every pit option looks catastrophic.
-_MAX_STINT_DEG_MS = 3_000.0
+# Forward tyre wear is NOT taken from the deg model. Probed against tyre_life it
+# returns a step between life 0 and ~4 and is then flat, identical for every
+# compound — an artifact of fuel load and out-laps, not wear. Reading a slope off
+# it makes a fresh tyre look slower than the worn one it replaced, so every pit
+# option loses and the longest stay always wins. The deg model is kept for the
+# pace *level* (what it is trained for); forward wear uses this explicit curve:
+# wear(life) = total * (1 - exp(-life / tau)), monotonic and saturating.
+# Calibrated by sweeping against harness stop-timing error over the frozen set,
+# not fitted per race. tau is long enough that wear is near-linear across a normal
+# stint (the usual working assumption) while still saturating, which is what keeps
+# a 45-lap extrapolation from reaching absurd lap times.
+_STINT_DEG_TOTAL_MS = 3_500.0
+_STINT_DEG_TAU_LAPS = 30.0
+# Relative wear rate by compound (softer degrades faster). Ordering only.
+_COMPOUND_DEG_SCALE = {1.0: 1.35, 2.0: 1.0, 3.0: 0.75}
+# Live degradation fit. Raw lap times improve as fuel burns off, so add back a
+# conservative per-lap fuel effect before interpreting the trend as tyre wear.
+# The estimate is robustly fitted over the current stint and shrunk toward the
+# generic prior; these limits prevent traffic or one lock-up becoming a "cliff".
+_LIVE_DEG_MIN_LAPS = 5
+_LIVE_DEG_WINDOW_LAPS = 12
+_FUEL_EFFECT_MS_PER_LAP = 35.0
+_LIVE_DEG_MAX_SLOPE_MS = 450.0
+_LIVE_DEG_MAX_WEIGHT = 0.65
+_LIVE_DEG_OUTLIER_FLOOR_MS = 500.0
+_CLIFF_MIN_EXTRA_SLOPE_MS = 180.0
+_CLIFF_MIN_RESIDUAL_MS = 300.0
+_CLIFF_MAX_EXTRA_SLOPE_MS = 600.0
 # Cap rival jitter so remaining-lap scaling does not swamp ranking.
 _RIVAL_NOISE_LAP_CAP = 12
 # Blend sim E[finish] toward board P when gaps are healthy (front-running).
@@ -46,6 +73,8 @@ _SANITY_GAP_BEHIND_CAP_MS = 4_000
 # runs past them rather than dropping it, or every option clamps to one number and
 # the oracle has nothing left to rank on.
 _BOARD_CLAMP_COMPRESSION = 0.15
+# Finish positions a rival lap must be worth before a called stop is moved.
+_PLAN_CONTINUITY_CREDIT = 0.15
 
 
 @dataclass
@@ -158,25 +187,300 @@ def _default_deg() -> LapDegModel | None:
     return LapDegModel.load(path)
 
 
-def _wear_ms(slope_ms: float, tyre_life: float) -> float:
-    """Linear tyre wear, bounded to a plausible per-stint delta."""
-    return min(max(0.0, slope_ms) * max(0.0, tyre_life), _MAX_STINT_DEG_MS)
+def compound_deg_total_ms(compound_id: float) -> float:
+    """Lap-time loss a fully worn set of this compound carries vs fresh."""
+    return _STINT_DEG_TOTAL_MS * _COMPOUND_DEG_SCALE.get(compound_id, 1.0)
+
+
+def _wear_ms(deg_total_ms: float, tyre_life: float) -> float:
+    """Saturating tyre wear: rises quickly early, then plateaus."""
+    life = max(0.0, tyre_life)
+    return max(0.0, deg_total_ms) * (1.0 - math.exp(-life / _STINT_DEG_TAU_LAPS))
+
+
+def _wear_delta_ms(deg_total_ms: float, life_from: float, life_to: float) -> float:
+    """Extra wear between two tyre ages (never negative)."""
+    return max(
+        0.0,
+        _wear_ms(deg_total_ms, life_to) - _wear_ms(deg_total_ms, life_from),
+    )
+
+
+@dataclass(frozen=True)
+class LiveDegEstimate:
+    """Current-stint degradation inferred from clean laps available so far."""
+
+    deg_total_ms: float
+    slope_ms_per_lap: float
+    prior_slope_ms_per_lap: float
+    sample_count: int
+    source: str
+    cliff_start_life: float | None = None
+    cliff_extra_ms_per_lap: float = 0.0
+
+    @property
+    def cliff_detected(self) -> bool:
+        return self.cliff_start_life is not None and self.cliff_extra_ms_per_lap > 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "sample_count": self.sample_count,
+            "slope_ms_per_lap": round(self.slope_ms_per_lap, 1),
+            "prior_slope_ms_per_lap": round(self.prior_slope_ms_per_lap, 1),
+            "cliff_detected": self.cliff_detected,
+            "cliff_start_life": self.cliff_start_life,
+            "cliff_extra_ms_per_lap": round(self.cliff_extra_ms_per_lap, 1),
+        }
+
+
+def _prior_wear_slope_ms(deg_total_ms: float, tyre_life: float) -> float:
+    """Derivative of the saturating prior at the current tyre age."""
+    life = max(0.0, tyre_life)
+    return (
+        max(0.0, deg_total_ms)
+        / _STINT_DEG_TAU_LAPS
+        * math.exp(-life / _STINT_DEG_TAU_LAPS)
+    )
+
+
+def _theil_sen_slope(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Median pairwise slope: robust to a small number of traffic/lock-up laps."""
+    slopes = [
+        (ys[j] - ys[i]) / (xs[j] - xs[i])
+        for i in range(len(xs))
+        for j in range(i + 1, len(xs))
+        if xs[j] != xs[i]
+    ]
+    return float(np.median(slopes)) if slopes else 0.0
+
+
+def _driver_compound_id(
+    replay: RaceReplay, race_id: int, driver_id: int, lap: int
+) -> float:
+    tyre = replay._tyres.get((race_id, driver_id, lap), {})
+    compound = (tyre.get("compound") or "UNKNOWN").strip().upper()
+    return float(COMPOUND_TO_ID.get(compound, 0))
+
+
+def _clean_current_stint_laps(
+    replay: RaceReplay,
+    race_id: int,
+    driver_id: int,
+    lap: int,
+    total_laps: int,
+    *,
+    compound_id: float,
+) -> tuple[list[float], list[float]]:
+    """Return (tyre age, lap ms) for usable laps in the current stint."""
+    driver_laps = replay._laps.get(race_id, {}).get(driver_id, {})
+    pits = [p for p in replay._pits.get(race_id, {}).get(driver_id, []) if p <= lap]
+    # The pit lap contains stationary time; lap 1 contains the race start.
+    first_usable = (max(pits) + 1) if pits else 2
+    points: list[tuple[float, float]] = []
+    for current_lap in range(first_usable, lap + 1):
+        row = driver_laps.get(current_lap)
+        if row is None:
+            continue
+        ms = float(row["milliseconds"])
+        sc_active, _, _, _ = replay._sc_flags(race_id, current_lap, total_laps)
+        if sc_active or ms >= _SC_LAP_MS_THRESHOLD:
+            continue
+        lap_compound_id = _driver_compound_id(
+            replay, race_id, driver_id, current_lap
+        )
+        if (
+            compound_id > 0
+            and lap_compound_id > 0
+            and lap_compound_id != compound_id
+        ):
+            continue
+        tyre = replay._tyres.get((race_id, driver_id, current_lap), {})
+        life = tyre.get("tyreLife")
+        if life is None:
+            life = current_lap - (max(pits) if pits else 0)
+        points.append((float(life), ms))
+    points = points[-_LIVE_DEG_WINDOW_LAPS:]
+    return [p[0] for p in points], [p[1] for p in points]
+
+
+def estimate_live_stint_deg(
+    replay: RaceReplay,
+    race_id: int,
+    driver_id: int,
+    lap: int,
+    total_laps: int,
+    *,
+    compound_id: float,
+    tyre_life: float,
+) -> LiveDegEstimate:
+    """Fit live wear from this driver's current green stint.
+
+    The robust lap-time slope is fuel-corrected and partially pooled with the
+    compound prior. A separate recent-vs-earlier test detects a sustained cliff.
+    """
+    prior_total = compound_deg_total_ms(compound_id)
+    prior_slope = _prior_wear_slope_ms(prior_total, tyre_life)
+    xs, ys = _clean_current_stint_laps(
+        replay,
+        race_id,
+        driver_id,
+        lap,
+        total_laps,
+        compound_id=compound_id,
+    )
+    if len(xs) < _LIVE_DEG_MIN_LAPS:
+        return LiveDegEstimate(
+            deg_total_ms=prior_total,
+            slope_ms_per_lap=prior_slope,
+            prior_slope_ms_per_lap=prior_slope,
+            sample_count=len(xs),
+            source="compound_prior",
+        )
+
+    raw_slope = _theil_sen_slope(xs, ys)
+    intercept = float(np.median([y - raw_slope * x for x, y in zip(xs, ys)]))
+    residuals = np.asarray(
+        [y - (intercept + raw_slope * x) for x, y in zip(xs, ys)],
+        dtype=np.float64,
+    )
+    residual_median = float(np.median(residuals))
+    mad = float(np.median(np.abs(residuals - residual_median)))
+    threshold = max(_LIVE_DEG_OUTLIER_FLOOR_MS, 3.0 * 1.4826 * mad)
+    kept = [
+        (x, y)
+        for x, y, residual in zip(xs, ys, residuals)
+        if abs(float(residual) - residual_median) <= threshold
+    ]
+    if len(kept) >= _LIVE_DEG_MIN_LAPS:
+        fit_xs = [p[0] for p in kept]
+        fit_ys = [p[1] for p in kept]
+        raw_slope = _theil_sen_slope(fit_xs, fit_ys)
+    else:
+        fit_xs, fit_ys = xs, ys
+
+    measured_slope = min(
+        _LIVE_DEG_MAX_SLOPE_MS,
+        max(0.0, raw_slope + _FUEL_EFFECT_MS_PER_LAP),
+    )
+    live_weight = min(
+        _LIVE_DEG_MAX_WEIGHT,
+        len(fit_xs) / (len(fit_xs) + 8.0),
+    )
+    fitted_slope = (
+        (1.0 - live_weight) * prior_slope + live_weight * measured_slope
+    )
+    # Choose a curve total whose derivative at the current age matches the
+    # pooled live slope. Keep broad physical limits for noisy/short samples.
+    fitted_total = fitted_slope * _STINT_DEG_TAU_LAPS * math.exp(
+        max(0.0, tyre_life) / _STINT_DEG_TAU_LAPS
+    )
+    fitted_total = min(9_000.0, max(500.0, fitted_total))
+
+    cliff_start: float | None = None
+    cliff_extra = 0.0
+    if len(xs) >= 7:
+        earlier_xs, earlier_ys = xs[:-3], ys[:-3]
+        recent_xs, recent_ys = xs[-3:], ys[-3:]
+        baseline_slope = _theil_sen_slope(earlier_xs, earlier_ys)
+        baseline_intercept = float(
+            np.median(
+                [
+                    y - baseline_slope * x
+                    for x, y in zip(earlier_xs, earlier_ys)
+                ]
+            )
+        )
+        recent_slope = _theil_sen_slope(recent_xs, recent_ys)
+        recent_residual = float(
+            np.median(
+                [
+                    y - (baseline_intercept + baseline_slope * x)
+                    for x, y in zip(recent_xs, recent_ys)
+                ]
+            )
+        )
+        extra = recent_slope - baseline_slope
+        if (
+            extra >= _CLIFF_MIN_EXTRA_SLOPE_MS
+            and recent_residual >= _CLIFF_MIN_RESIDUAL_MS
+        ):
+            cliff_start = recent_xs[0]
+            cliff_extra = min(_CLIFF_MAX_EXTRA_SLOPE_MS, extra)
+
+    return LiveDegEstimate(
+        deg_total_ms=fitted_total,
+        slope_ms_per_lap=fitted_slope,
+        prior_slope_ms_per_lap=prior_slope,
+        sample_count=len(fit_xs),
+        source="live_stint",
+        cliff_start_life=cliff_start,
+        cliff_extra_ms_per_lap=cliff_extra,
+    )
+
+
+def live_deg_for_state(replay: RaceReplay, state: RaceState) -> LiveDegEstimate:
+    """Convenience wrapper used by both the simulator and its tool response."""
+    compound = (state.tyre_compound or "UNKNOWN").strip().upper()
+    compound_id = float(COMPOUND_TO_ID.get(compound, 0))
+    tyre_life = float(
+        state.tyre_life
+        if state.tyre_life is not None
+        else state.stint_age_laps
+    )
+    return estimate_live_stint_deg(
+        replay,
+        state.race_id,
+        state.driver_id,
+        state.lap,
+        state.total_laps,
+        compound_id=compound_id,
+        tyre_life=tyre_life,
+    )
+
+
+def _cliff_wear_ms(
+    tyre_life: float,
+    cliff_start_life: float | None,
+    cliff_extra_ms_per_lap: float,
+) -> float:
+    if cliff_start_life is None:
+        return 0.0
+    return max(0.0, tyre_life - cliff_start_life) * max(
+        0.0, cliff_extra_ms_per_lap
+    )
 
 
 @dataclass
 class PaceSchedule:
     """
-    Fast MC pace: a few HGB probes → linear tyre-life slope per compound.
-    Avoids calling the sklearn model on every simulated lap.
+    Fast MC pace: deg-model probe for the pace level, explicit wear curve for
+    forward degradation. Avoids calling sklearn on every simulated lap.
     """
 
-    # compound_id -> (intercept_ms at life=0, slope_ms_per_lap)
+    # compound_id -> (intercept_ms at life=0, total wear_ms as life grows)
     by_compound: dict[float, tuple[float, float]]
     fallback_ms: float
+    # Only the current set can have a live detected cliff; a future set uses prior.
+    cliff_by_compound: dict[float, tuple[float | None, float]] = field(
+        default_factory=dict
+    )
 
-    def wear_slope_ms(self, compound_id: float) -> float:
+    def deg_total_ms(self, compound_id: float) -> float:
         pair = self.by_compound.get(compound_id)
-        return pair[1] if pair is not None else 0.0
+        if pair is not None:
+            return pair[1]
+        return compound_deg_total_ms(compound_id)
+
+    def wear_ms(self, compound_id: float, tyre_life: float) -> float:
+        pair = self.by_compound.get(compound_id)
+        deg_total = pair[1] if pair is not None else compound_deg_total_ms(compound_id)
+        cliff_start, cliff_extra = self.cliff_by_compound.get(
+            compound_id, (None, 0.0)
+        )
+        return _wear_ms(deg_total, tyre_life) + _cliff_wear_ms(
+            tyre_life, cliff_start, cliff_extra
+        )
 
     def lap_ms(self, snap: SimSnapshot, rng: np.random.Generator, noise_ms: float) -> float:
         if snap.sc_active > 0.5:
@@ -186,28 +490,18 @@ class PaceSchedule:
             if pair is None:
                 base = self.fallback_ms
             else:
-                intercept, slope = pair
-                base = intercept + _wear_ms(slope, snap.tyre_life)
+                intercept, deg_total = pair
+                cliff_start, cliff_extra = self.cliff_by_compound.get(
+                    snap.compound_id, (None, 0.0)
+                )
+                base = (
+                    intercept
+                    + _wear_ms(deg_total, snap.tyre_life)
+                    + _cliff_wear_ms(snap.tyre_life, cliff_start, cliff_extra)
+                )
         if noise_ms > 0:
             base = base + float(rng.normal(0.0, noise_ms))
         return max(base, 40_000.0)
-
-
-def _probe_ms(deg: LapDegModel, snap: SimSnapshot, tyre_life: float, compound_id: float) -> float:
-    probe = SimSnapshot(
-        circuit_id=snap.circuit_id,
-        lap=snap.lap,
-        total_laps=snap.total_laps,
-        stint_age=tyre_life,
-        tyre_life=tyre_life,
-        compound_id=compound_id,
-        last_lap_ms=snap.last_lap_ms,
-        prev_lap_ms=snap.prev_lap_ms,
-        prev2_lap_ms=snap.prev2_lap_ms,
-        sc_active=snap.sc_active,
-        cumulative_ms=snap.cumulative_ms,
-    )
-    return float(deg.model.predict(probe.feature_row())[0])
 
 
 def _green_flag_anchor_ms(
@@ -253,47 +547,43 @@ def build_pace_schedule(
     snap0: SimSnapshot,
     *,
     green_reference_ms: float | None = None,
+    live_deg: LiveDegEstimate | None = None,
 ) -> PaceSchedule:
     anchor_ms = _green_flag_anchor_ms(deg, snap0, green_reference_ms=green_reference_ms)
-    if deg is None:
-        return PaceSchedule(by_compound={}, fallback_ms=anchor_ms)
-
-    by_c: dict[float, tuple[float, float]] = {}
-    post_pit_id = alternate_dry_compound_id(snap0.compound_id)
-    compounds = {snap0.compound_id, post_pit_id}
-    green_snap = SimSnapshot(
-        circuit_id=snap0.circuit_id,
-        lap=snap0.lap,
-        total_laps=snap0.total_laps,
-        stint_age=snap0.stint_age,
-        tyre_life=snap0.tyre_life,
-        compound_id=snap0.compound_id,
-        last_lap_ms=anchor_ms,
-        prev_lap_ms=snap0.prev_lap_ms,
-        prev2_lap_ms=snap0.prev2_lap_ms,
-        sc_active=0.0,
-        cumulative_ms=snap0.cumulative_ms,
+    current_total = (
+        live_deg.deg_total_ms
+        if live_deg is not None
+        else compound_deg_total_ms(snap0.compound_id)
     )
-    for cid in compounds:
-        life0 = snap0.tyre_life if cid == snap0.compound_id else 0.0
-        probe = green_snap if cid == snap0.compound_id else green_snap
-        y0 = _probe_ms(deg, probe, life0, cid)
-        y1 = _probe_ms(deg, probe, life0 + 8.0, cid)
-        # Wear-only: never allow "faster with age" in the MC schedule.
-        slope = max(0.0, (y1 - y0) / 8.0)
-        # Express as intercept at life=0: y = intercept + slope * life
-        intercept = y0 - slope * life0
-        # Anchor current compound so first predicted lap stays near board pace.
+    cliff_start = live_deg.cliff_start_life if live_deg is not None else None
+    cliff_extra = live_deg.cliff_extra_ms_per_lap if live_deg is not None else 0.0
+    # Pace this car would show on a fresh set of its current compound. The anchor
+    # is a worn lap, so the wear on it must come off before the fresh-tyre gain is
+    # applied: deriving post-pit pace from the worn anchor makes a new tyre look
+    # slower the longer you wait, which is what pushes the stop over the horizon.
+    unworn_ms = (
+        anchor_ms
+        - _wear_ms(current_total, snap0.tyre_life)
+        - _cliff_wear_ms(snap0.tyre_life, cliff_start, cliff_extra)
+    )
+    by_c: dict[float, tuple[float, float]] = {}
+    cliffs: dict[float, tuple[float | None, float]] = {}
+    post_pit_id = alternate_dry_compound_id(snap0.compound_id)
+    for cid in {snap0.compound_id, post_pit_id}:
         if cid == snap0.compound_id:
-            predicted_now = intercept + _wear_ms(slope, snap0.tyre_life)
-            shift = anchor_ms - predicted_now
-            intercept = intercept + shift
+            deg_total = current_total
+            intercept = unworn_ms
+            if cliff_start is not None:
+                cliffs[cid] = (cliff_start, cliff_extra)
         else:
-            # Post-pit stint: align with the fresh-tyre pace used for rivals.
-            intercept = _fresh_tyre_pace_ms(anchor_ms)
-            slope = max(slope, 0.0)
-        by_c[cid] = (intercept, slope)
-    return PaceSchedule(by_compound=by_c, fallback_ms=anchor_ms)
+            deg_total = compound_deg_total_ms(cid)
+            intercept = _fresh_tyre_pace_ms(unworn_ms)
+        by_c[cid] = (intercept, deg_total)
+    return PaceSchedule(
+        by_compound=by_c,
+        fallback_ms=anchor_ms,
+        cliff_by_compound=cliffs,
+    )
 
 
 def _laps_until_sc_end(replay: RaceReplay, race_id: int, lap: int, total_laps: int) -> int:
@@ -374,12 +664,49 @@ def _recent_green_pace_ms(
     return float(np.mean(recent)) if recent else 90_000.0
 
 
-def _stint_time_ms(laps: int, pace_ms: float, wear_slope_ms: float) -> float:
-    """Time for `laps` laps whose pace degrades from `pace_ms` at the wear slope."""
+def _stint_time_ms(
+    laps: int,
+    pace_ms: float,
+    deg_total_ms: float,
+    *,
+    life_from: float = 0.0,
+    cliff_start_life: float | None = None,
+    cliff_extra_ms_per_lap: float = 0.0,
+) -> float:
+    """Time for `laps` laps, adding wear accrued beyond the current tyre age.
+
+    `pace_ms` already reflects wear at `life_from`, so only the increment counts.
+    """
     if laps <= 0:
         return 0.0
-    wear = sum(_wear_ms(wear_slope_ms, float(i)) for i in range(laps))
-    return laps * pace_ms + wear
+    total = 0.0
+    for i in range(laps):
+        life_to = life_from + i
+        curve_delta = _wear_delta_ms(deg_total_ms, life_from, life_to)
+        cliff_delta = max(
+            0.0,
+            _cliff_wear_ms(
+                life_to, cliff_start_life, cliff_extra_ms_per_lap
+            )
+            - _cliff_wear_ms(
+                life_from, cliff_start_life, cliff_extra_ms_per_lap
+            ),
+        )
+        total += pace_ms + curve_delta + cliff_delta
+    return total
+
+
+def _driver_tyre_life(
+    replay: RaceReplay, race_id: int, driver_id: int, lap: int
+) -> float:
+    """Laps on the current set, inferred from this driver's pit history."""
+    tyre_life = replay._tyres.get((race_id, driver_id, lap), {}).get("tyreLife")
+    if tyre_life is not None:
+        return float(tyre_life)
+    pits = [p for p in replay._pits.get(race_id, {}).get(driver_id, []) if p <= lap]
+    if not pits:
+        return float(lap)
+    return float(lap - max(pits))
 
 
 def _project_driver_finish_ms(
@@ -390,14 +717,29 @@ def _project_driver_finish_ms(
     *,
     remaining: int,
     pace_ms: float,
-    post_pit_pace_ms: float,
     pit_loss_ms: float,
-    wear_slope_ms: float = 0.0,
+    deg_total_ms: float = 0.0,
+    post_pit_deg_total_ms: float | None = None,
+    tyre_life: float = 0.0,
+    cliff_start_life: float | None = None,
+    cliff_extra_ms_per_lap: float = 0.0,
     sc_surplus_ms: float = 0.0,
 ) -> float:
     """Historical replay projection: rivals follow known future pit laps."""
     if remaining <= 0:
         return cum
+    # Strip the wear already on this set to recover fresh-set pace, then apply
+    # the fresh-tyre gain. Using worn pace here would hide the benefit of pitting.
+    unworn_ms = (
+        pace_ms
+        - _wear_ms(deg_total_ms, tyre_life)
+        - _cliff_wear_ms(
+            tyre_life, cliff_start_life, cliff_extra_ms_per_lap
+        )
+    )
+    fresh_ms = _fresh_tyre_pace_ms(unworn_ms)
+    if post_pit_deg_total_ms is None:
+        post_pit_deg_total_ms = deg_total_ms
     pit_laps = sorted(
         p for p in replay._pits.get(state.race_id, {}).get(driver_id, [])
         if p > state.lap
@@ -408,12 +750,30 @@ def _project_driver_finish_ms(
         laps_after = max(0, remaining - laps_before)
         return (
             float(cum)
-            + _stint_time_ms(laps_before, pace_ms, wear_slope_ms)
+            + _stint_time_ms(
+                laps_before,
+                pace_ms,
+                deg_total_ms,
+                life_from=tyre_life,
+                cliff_start_life=cliff_start_life,
+                cliff_extra_ms_per_lap=cliff_extra_ms_per_lap,
+            )
             + pit_loss_ms
-            + _stint_time_ms(laps_after, post_pit_pace_ms, wear_slope_ms)
+            + _stint_time_ms(laps_after, fresh_ms, post_pit_deg_total_ms)
             + sc_surplus_ms
         )
-    return float(cum) + _stint_time_ms(remaining, pace_ms, wear_slope_ms) + sc_surplus_ms
+    return (
+        float(cum)
+        + _stint_time_ms(
+            remaining,
+            pace_ms,
+            deg_total_ms,
+            life_from=tyre_life,
+            cliff_start_life=cliff_start_life,
+            cliff_extra_ms_per_lap=cliff_extra_ms_per_lap,
+        )
+        + sc_surplus_ms
+    )
 
 
 def _fresh_tyre_pace_ms(pre_pit_pace_ms: float) -> float:
@@ -425,16 +785,15 @@ def rival_finish_times_ms(
     state: RaceState,
     *,
     pit_loss_ms: float = DEFAULT_PIT_LOSS_MS,
-    wear_slope_ms: float = 0.0,
     sc_surplus_ms: float = 0.0,
 ) -> list[float]:
     """
     Rival finish estimates: each driver's green-flag pace plus known future pit
     laps and a driver-specific fresh-tyre offset. Excludes the ego driver.
 
-    Rivals are projected on green pace with the same wear slope the ego rollout
-    uses; any remaining SC laps are added on top as a shared surplus. Both sides
-    must degrade alike or the ranking measures model asymmetry, not strategy.
+    Each rival gets the same estimator as the ego, fitted to that rival's current
+    stint. This keeps treatment symmetric without pretending every car has the
+    same live degradation.
     """
     cumul = replay._cumulative_times(state.race_id, state.lap)
     remaining = max(0, state.total_laps - state.lap)
@@ -451,7 +810,22 @@ def rival_finish_times_ms(
             total,
             board_sc_active=False,
         )
-        post_pit = _fresh_tyre_pace_ms(pace)
+        tyre_life = _driver_tyre_life(
+            replay, state.race_id, did, state.lap
+        )
+        compound_id = _driver_compound_id(
+            replay, state.race_id, did, state.lap
+        )
+        live_deg = estimate_live_stint_deg(
+            replay,
+            state.race_id,
+            did,
+            state.lap,
+            total,
+            compound_id=compound_id,
+            tyre_life=tyre_life,
+        )
+        post_pit_id = alternate_dry_compound_id(compound_id)
         out.append(
             _project_driver_finish_ms(
                 replay,
@@ -460,9 +834,12 @@ def rival_finish_times_ms(
                 float(cum),
                 remaining=remaining,
                 pace_ms=pace,
-                post_pit_pace_ms=post_pit,
                 pit_loss_ms=pit_loss_ms,
-                wear_slope_ms=wear_slope_ms,
+                deg_total_ms=live_deg.deg_total_ms,
+                post_pit_deg_total_ms=compound_deg_total_ms(post_pit_id),
+                tyre_life=tyre_life,
+                cliff_start_life=live_deg.cliff_start_life,
+                cliff_extra_ms_per_lap=live_deg.cliff_extra_ms_per_lap,
                 sc_surplus_ms=sc_surplus_ms,
             )
         )
@@ -552,6 +929,16 @@ def _extra_stop_mean_penalty(
     return 0.0
 
 
+def _plan_continuity_credit(label: str) -> float:
+    """Switching cost for abandoning a stop lap already called.
+
+    Options sit within Monte Carlo noise of each other around the optimum, so
+    without a switching cost the winner is re-drawn every lap and the stop wanders.
+    A pit wall does not move a called stop for a hundredth of a position either.
+    """
+    return _PLAN_CONTINUITY_CREDIT if label == "hold_plan" else 0.0
+
+
 def simulate_ego_finish_ms(
     snap0: SimSnapshot,
     *,
@@ -617,12 +1004,24 @@ def build_default_options(
     remaining_laps: int,
     *,
     mandatory_pit_pending: bool = False,
+    plan_offset: int | None = None,
 ) -> list[StrategyOption]:
+    """Option menu for one lap.
+
+    `plan_offset` is laps from now to an already-committed stop lap. Without it
+    the menu is purely relative, so re-picking the same label each lap walks the
+    absolute stop forward — a plan that never arrives. The hold_plan card makes
+    "keep the stop where we said" a real, scorable choice whose offset shrinks.
+    """
     opts: list[StrategyOption] = []
+    # At offset <= 1 the committed lap IS the next lap, and pit_next_lap already
+    # covers it with the correct pit action — so the plan firms into a box call.
+    if plan_offset is not None and 1 < plan_offset <= remaining_laps:
+        opts.append(StrategyOption("A", plan_offset, "hold_plan"))
     for n in DEFAULT_STAY_NS:
         if n == 0:
             opts.append(
-                StrategyOption("A", 0, "pit_next_lap")
+                StrategyOption(chr(ord("A") + len(opts)), 0, "pit_next_lap")
             )
         elif n < remaining_laps:
             opts.append(
@@ -668,6 +1067,7 @@ def simulate_strategy_cards(
     noise_ms: float = DEFAULT_NOISE_MS,
     seed: int = 42,
     options: Sequence[StrategyOption] | None = None,
+    plan_target_lap: int | None = None,
 ) -> list[OptionCard]:
     if deg is None:
         deg = _default_deg()
@@ -682,7 +1082,13 @@ def simulate_strategy_cards(
         state.total_laps,
         board_sc_active=False,
     )
-    pace = build_pace_schedule(deg, snap0, green_reference_ms=ego_green_ms)
+    ego_live_deg = live_deg_for_state(replay, state)
+    pace = build_pace_schedule(
+        deg,
+        snap0,
+        green_reference_ms=ego_green_ms,
+        live_deg=ego_live_deg,
+    )
     remaining = max(0, state.total_laps - state.lap)
     effective_pit_loss = (
         DEFAULT_SC_PIT_LOSS_MS if state.sc_active else pit_loss_ms
@@ -693,7 +1099,6 @@ def simulate_strategy_cards(
         replay,
         state,
         pit_loss_ms=effective_pit_loss,
-        wear_slope_ms=pace.wear_slope_ms(snap0.compound_id),
         sc_surplus_ms=min(sc_left, remaining)
         * max(0.0, sc_lap_ms - pace.fallback_ms),
     )
@@ -704,7 +1109,13 @@ def simulate_strategy_cards(
         if must_pit:
             opts = [o for o in opts if o.pit_after_laps <= remaining]
     else:
-        opts = build_default_options(remaining, mandatory_pit_pending=must_pit)
+        opts = build_default_options(
+            remaining,
+            mandatory_pit_pending=must_pit,
+            plan_offset=(
+                plan_target_lap - state.lap if plan_target_lap is not None else None
+            ),
+        )
     if not opts:
         raise ValueError("no legal strategy options after dry-race pit constraints")
     rng = np.random.default_rng(seed)
@@ -731,8 +1142,12 @@ def simulate_strategy_cards(
             positions.append(projected_finish_position(raw_pos, state))
             times.append(finish_ms)
         pos_a = np.asarray(positions, dtype=np.float64)
-        mean_pos = float(np.mean(pos_a)) + _extra_stop_mean_penalty(
-            state, opt.label, pit_after_laps=opt.pit_after_laps, remaining=remaining
+        mean_pos = (
+            float(np.mean(pos_a))
+            + _extra_stop_mean_penalty(
+                state, opt.label, pit_after_laps=opt.pit_after_laps, remaining=remaining
+            )
+            - _plan_continuity_credit(opt.label)
         )
         cards.append(
             OptionCard(

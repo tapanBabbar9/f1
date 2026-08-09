@@ -51,6 +51,7 @@ class MemoryEntry:
     rationale: str
     evidence: str
     mean_finish_pos: float | None = None
+    planned_pit_lap: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,9 +63,13 @@ class MemoryEntry:
             "rationale": self.rationale,
             "evidence": self.evidence,
             "mean_finish_pos": self.mean_finish_pos,
+            "planned_pit_lap": self.planned_pit_lap,
         }
 
     def _plan_meta(self) -> str:
+        """Plan as an absolute lap: a label alone cannot show the stop sliding."""
+        if self.planned_pit_lap is not None:
+            return f"(option {self.chosen_option_id}, target stop L{self.planned_pit_lap})"
         return f"(option {self.chosen_option_id}, {self.chosen_label})"
 
     def _head(self, *, pit_laps: frozenset[int] | None = None) -> str:
@@ -101,15 +106,18 @@ def _execution_mismatch(
 
 def _memory_group_key(
     entry: MemoryEntry, pit_laps: frozenset[int] | None
-) -> tuple[str, str, str, bool]:
+) -> tuple[str, str, str, bool, int | None]:
     mismatch = False
     if pit_laps is not None:
         mismatch = _execution_mismatch(entry, pit_laps)
+    # planned_pit_lap is part of the key so a drifting target breaks the run of
+    # laps instead of collapsing into one line that reads as plan continuity.
     return (
         entry.action,
         entry.chosen_option_id,
         entry.chosen_label,
         mismatch,
+        entry.planned_pit_lap,
     )
 
 
@@ -121,7 +129,9 @@ def _summarize_prompt_lines(
     """Merge consecutive laps with the same plan/evidence into one line."""
     if not entries:
         return []
-    groups: list[tuple[tuple[str, str, str, bool], MemoryEntry, MemoryEntry]] = []
+    groups: list[
+        tuple[tuple[str, str, str, bool, int | None], MemoryEntry, MemoryEntry]
+    ] = []
     for entry in entries:
         key = _memory_group_key(entry, pit_laps)
         if groups and groups[-1][0] == key and groups[-1][2].lap + 1 == entry.lap:
@@ -176,6 +186,33 @@ class RaceMemoryStore:
             return None
         return rows[-1]
 
+    def committed_pit_lap(
+        self,
+        race_id: int,
+        driver_id: int,
+        *,
+        current_lap: int,
+        pit_laps: frozenset[int] | None = None,
+    ) -> int | None:
+        """Absolute stop lap already promised, if it is still ahead of us.
+
+        Dropped once the target passes or the driver has since pitted, so a stale
+        plan cannot pin the option menu to a lap that no longer means anything.
+        """
+        rows = [e for e in self.entries(race_id, driver_id) if e.lap < current_lap]
+        for entry in reversed(rows):
+            target = entry.planned_pit_lap
+            if target is None:
+                continue
+            if target <= current_lap:
+                return None
+            if pit_laps is not None and any(
+                entry.lap < p <= current_lap for p in pit_laps
+            ):
+                return None
+            return target
+        return None
+
     def record_sim_decision(
         self,
         state: RaceState,
@@ -187,6 +224,7 @@ class RaceMemoryStore:
         rationale: str,
         sim: dict[str, Any] | None,
         mean_finish_pos: float | None = None,
+        planned_pit_lap: int | None = None,
     ) -> MemoryEntry:
         entry = MemoryEntry(
             lap=state.lap,
@@ -197,6 +235,7 @@ class RaceMemoryStore:
             rationale=rationale,
             evidence=evidence_fingerprint(state, sim),
             mean_finish_pos=mean_finish_pos,
+            planned_pit_lap=planned_pit_lap,
         )
         k = self.key(state.race_id, state.driver_id)
         self._entries.setdefault(k, []).append(entry)

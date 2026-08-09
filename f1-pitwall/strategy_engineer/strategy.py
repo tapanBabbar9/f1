@@ -84,6 +84,19 @@ def _strategy_context_lines(
     ]
     if state.gap_behind_ms is not None and state.gap_behind_ms < 2_000:
         lines.append("Undercut pressure: car within two seconds behind.")
+    if memory is not None:
+        target = memory.committed_pit_lap(
+            state.race_id,
+            state.driver_id,
+            current_lap=state.lap,
+            pit_laps=pit_laps,
+        )
+        if target is not None:
+            lines.append(
+                f"Committed plan: stop on lap {target} "
+                f"({target - state.lap} laps away). The hold_plan option keeps that "
+                "lap; picking a stay_N option instead moves the stop later."
+            )
     if memory is not None and pit_laps is not None:
         last = memory.last_entry(state.race_id, state.driver_id)
         if last is not None and memory.entry_advisory_mismatch(last, pit_laps):
@@ -118,6 +131,22 @@ def build_sim_user_prompt(
     return "\n\n".join(parts)
 
 
+def committed_plan_lap(
+    state: RaceState,
+    memory: RaceMemoryStore | None,
+    replay: RaceReplay,
+) -> int | None:
+    """Absolute stop lap promised on an earlier lap, for the option menu."""
+    if memory is None:
+        return None
+    return memory.committed_pit_lap(
+        state.race_id,
+        state.driver_id,
+        current_lap=state.lap,
+        pit_laps=replay.pit_laps(state.race_id, state.driver_id),
+    )
+
+
 def _sim_payload_from_results(tool_results: list[ToolResult]) -> dict[str, Any] | None:
     for tr in reversed(tool_results):
         if tr.name == "simulate_strategies":
@@ -141,6 +170,7 @@ def _record_sim_decision(
             rationale=sd.decision.rationale,
             sim=sim,
             mean_finish_pos=sd.chosen_mean_finish_pos,
+            planned_pit_lap=sd.chosen_planned_pit_lap,
         )
     return sd
 
@@ -210,6 +240,7 @@ class SimAgentDecision:
     oracle_label: str
     oracle_mean_finish_pos: float
     regret: float
+    chosen_planned_pit_lap: int | None = None
     tool_results: list[ToolResult] = field(default_factory=list)
     faithfulness: dict[str, Any] = field(default_factory=dict)
     trajectory: dict[str, Any] | None = None
@@ -225,6 +256,7 @@ class SimAgentDecision:
             "oracle_label": self.oracle_label,
             "oracle_mean_finish_pos": round(self.oracle_mean_finish_pos, 3),
             "regret": round(self.regret, 4),
+            "planned_pit_lap": self.chosen_planned_pit_lap,
             "tools_used": [t.name for t in self.tool_results],
             "faithfulness": self.faithfulness,
         }
@@ -322,6 +354,11 @@ def build_sim_decision_from_choice(
         oracle_label=str(oracle["label"]),
         oracle_mean_finish_pos=o_mean,
         regret=position_regret(c_mean, o_mean),
+        chosen_planned_pit_lap=(
+            int(chosen["planned_pit_lap"])
+            if chosen.get("planned_pit_lap") is not None
+            else None
+        ),
         tool_results=tool_results,
         faithfulness=faith,
         trajectory=trajectory,
@@ -357,7 +394,11 @@ class HeuristicSimBackend(SimAwareBackend):
         *,
         memory: RaceMemoryStore | None = None,
     ) -> SimAgentDecision:
-        belt = ToolBelt(self.replay, state)
+        belt = ToolBelt(
+            self.replay,
+            state,
+            plan_target_lap=committed_plan_lap(state, memory, self.replay),
+        )
         results = [
             belt.call("get_gaps"),
             belt.call("get_remaining_laps"),
@@ -389,7 +430,11 @@ class PitNextSimBaseline(SimAwareBackend):
         *,
         memory: RaceMemoryStore | None = None,
     ) -> SimAgentDecision:
-        belt = ToolBelt(self.replay, state)
+        belt = ToolBelt(
+            self.replay,
+            state,
+            plan_target_lap=committed_plan_lap(state, memory, self.replay),
+        )
         results = [belt.call("simulate_strategies")]
         sim = results[0].payload
         options = sim.get("options") or []
@@ -447,7 +492,11 @@ class OpenAISimBackend(SimAwareBackend):
         *,
         memory: RaceMemoryStore | None = None,
     ) -> SimAgentDecision:
-        belt = ToolBelt(self.replay, state)
+        belt = ToolBelt(
+            self.replay,
+            state,
+            plan_target_lap=committed_plan_lap(state, memory, self.replay),
+        )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SIM_SYSTEM_PROMPT},
             {

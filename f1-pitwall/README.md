@@ -228,9 +228,7 @@ Committed scoreboard: `artifacts/lap_deg/metrics.json`.
 
 **What it does:** roll the race forward under pit-next vs stay-N options (lap deg + pit loss + pace noise). Returns Monte Carlo cards with mean finish position and `P(finish ≤ 3/5/10)`. Exposed as tool `simulate_strategies`.
 
-When `pit_stops so far = 0` on a dry compound, `stay_to_finish` **is omitted** from the option menu (mandatory pit still owed).
-
-**Known issue — sliding stop:** options are a *relative* grid (`DEFAULT_STAY_NS = 0, 3, 5, 8` → `pit_next_lap` / `stay_N_then_pit`). `planned_pit_lap = current_lap + N`, so re-picking the same label each lap advances the absolute stop by one (e.g. L9 → L10 → … → L15). When the longest stay option keeps winning (common while deg/wear makes “later” look free), the plan drifts even though the engineer says “maintaining plan.” Fix later: absolute continuity card + honest within-stint wear (not a prompt-only patch). See also Phase 7.
+When `pit_stops so far = 0` on a dry compound, `stay_to_finish` **is omitted** from the option menu (mandatory pit still owed). Wear uses a saturating compound prior, optionally refined by `estimate_live_stint_deg` from this driver's recent green laps. Options include `hold_plan` when memory has a committed stop lap.
 
 ```bash
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/simulate_once.py --year 2024 --name-contains British --driver-id 1 --lap 22
@@ -254,9 +252,7 @@ Committed scoreboard: `artifacts/sim_agent/metrics.json` — **mean regret=0**, 
 
 ## Phase 7 — memory across laps
 
-**What it does:** persist pit-wall instructions keyed by `(race, driver)` each lap; inject prior plan into the Phase 6 user prompt; support full-race replay (not just single-lap eval samples). Metrics: flip-flop rate (pit/stay reversal without material board/sim change) and regret delta vs memory-off.
-
-**Known issue — sliding stop (with Phase 5):** memory stores the option *label* (`stay_8_then_pit`), not the absolute `planned_pit_lap`. Prompt lines like `L1-6: stay (option D, stay_8_then_pit)` look like plan continuity while the target lap drifts. Continuity should surface the committed stop lap (e.g. target L13) and score a shrinking-offset card against it.
+**What it does:** persist pit-wall instructions keyed by `(race, driver)` each lap; inject prior plan into the Phase 6 user prompt; support full-race replay (not just single-lap eval samples). Entries store absolute `planned_pit_lap`; `committed_pit_lap()` feeds the Phase 5 `hold_plan` card. Metrics: flip-flop rate (pit/stay reversal without material board/sim change) and regret delta vs memory-off.
 
 ```bash
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/replay_race.py --memory --backend heuristic_sim --year 2024 --name-contains British --driver-id 1
@@ -300,9 +296,19 @@ Strategy (openai_sim / heuristic_sim) → chosen_option_id, action, rationale, m
 Race Engineer radio                   → driver_message only
 ```
 
-Backends via `RACE_ENGINEER_RADIO` or `--radio`: `heuristic` (default), `openai`, `passthrough`.
+Backends via `RACE_ENGINEER_RADIO` or `--radio`: `heuristic` (default), `openai`, `passthrough`. Recent calls are kept in `radio_log` so the LLM can avoid re-sending the same message.
 
 ```bash
 f1-pitwall/.venv/bin/python f1-pitwall/scripts/decide_once_sim.py \
   --backend heuristic_sim --radio heuristic --year 2024 --name-contains British --driver-id 1 --lap 22
 ```
+
+Fix history lives in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Known issues
+
+Open items for later (strategy continuity; not broken export/radio plumbing):
+
+- **`hold_plan` loses too easily** — continuity credit is small, so mid-stint sim redraws can walk the absolute stop target even when a committed lap is still ahead.
+- **“Maintaining plan” while changing it** — the agent sometimes claims continuity in the rationale but picks a new `stay_N` instead of `hold_plan`.
+- **Extra stop after a completed pit cycle** — after stops already taken, the planner can open another stop window when staying out is competitive.

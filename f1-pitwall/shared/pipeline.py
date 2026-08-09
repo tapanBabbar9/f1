@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, Sequence
 
 from race_engineer.radio import RadioBackend, apply_radio, get_radio_backend
+from race_engineer.radio_log import RadioCall, RadioLog
 from shared.decision import CrewChiefDecision
 from shared.messages import RadioResult, brief_from_decision, plan_key_from_decision
 from shared.state import RaceState
@@ -22,12 +24,15 @@ def apply_radio_decision(
     radio: RadioBackend | None = None,
     *,
     replay: Any | None = None,
+    recent_calls: Sequence[RadioCall] = (),
 ) -> tuple[CrewChiefDecision, RadioResult]:
     """Hand a read-only Strategy plan to Race Engineer; assert plan unchanged."""
     before = plan_key_from_decision(decision)
     _ = brief_from_decision(decision)  # frozen A2A payload
     radio = radio or get_radio_backend()
-    rewritten, result = apply_radio(state, decision, radio, replay=replay)
+    rewritten, result = apply_radio(
+        state, decision, radio, replay=replay, recent_calls=recent_calls
+    )
     after = plan_key_from_decision(rewritten)
     if after != before:
         raise RuntimeError(
@@ -43,11 +48,20 @@ def attach_radio(
     radio: RadioBackend,
     *,
     replay: Any | None = None,
+    log: RadioLog | None = None,
 ) -> SimAgentDecision:
     """Post-pass after Strategy (+ memory) are final."""
+    recent = log.calls(state.race_id, state.driver_id) if log else ()
     new_decision, radio_result = apply_radio_decision(
-        state, sd.decision, radio, replay=replay
+        state, sd.decision, radio, replay=replay, recent_calls=recent
     )
+    if log is not None:
+        log.record(
+            state.race_id,
+            state.driver_id,
+            state.lap,
+            radio_result.driver_message,
+        )
     traj = sd.trajectory
     if traj is not None:
         traj = {
@@ -57,19 +71,9 @@ def attach_radio(
                 "driver_message": radio_result.driver_message,
             },
         }
-    return SimAgentDecision(
-        decision=new_decision,
-        chosen_option_id=sd.chosen_option_id,
-        chosen_label=sd.chosen_label,
-        chosen_mean_finish_pos=sd.chosen_mean_finish_pos,
-        oracle_option_id=sd.oracle_option_id,
-        oracle_label=sd.oracle_label,
-        oracle_mean_finish_pos=sd.oracle_mean_finish_pos,
-        regret=sd.regret,
-        tool_results=sd.tool_results,
-        faithfulness=sd.faithfulness,
-        trajectory=traj,
-        radio=radio_result,
+    # replace() keeps every Strategy-owned field the radio pass must not touch.
+    return replace(
+        sd, decision=new_decision, trajectory=traj, radio=radio_result
     )
 
 
@@ -90,6 +94,7 @@ class MultiAgentSimBackend(SimAwareBackend):
         self.strategy = strategy
         self.radio = radio or get_radio_backend(default_headers=default_headers)
         self.replay = strategy.replay
+        self.radio_log = RadioLog()
 
     @property
     def name(self) -> str:
@@ -106,7 +111,9 @@ class MultiAgentSimBackend(SimAwareBackend):
         memory: RaceMemoryStore | None = None,
     ) -> SimAgentDecision:
         sd = self.strategy.decide_with_sims(state, memory=memory)
-        return attach_radio(state, sd, self.radio, replay=self.replay)
+        return attach_radio(
+            state, sd, self.radio, replay=self.replay, log=self.radio_log
+        )
 
 
 def get_sim_backend(

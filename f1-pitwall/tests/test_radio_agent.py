@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
@@ -12,10 +14,12 @@ sys.path.insert(0, str(ROOT))
 
 from race_engineer.radio import (
     HeuristicRadioBackend,
+    OpenAIRadioBackend,
     PassthroughRadioBackend,
     apply_radio,
     parse_radio_message,
 )
+from race_engineer.radio_log import RadioCall, RadioLog, is_repetitive, similarity
 from shared.decision import CrewChiefDecision
 from shared.pipeline import MultiAgentSimBackend, attach_radio, get_sim_backend
 from shared.replay import RaceReplay
@@ -23,6 +27,35 @@ from strategy_engineer.memory import RaceMemoryStore
 from strategy_engineer.strategy import HeuristicSimBackend
 
 DATASET = REPO / "dataset"
+
+
+class _StubClient:
+    """Replays canned driver_message replies and records what was sent."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.sent: list[list[dict]] = []
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create)
+        )
+
+    def _create(self, **kwargs):
+        self.sent.append(kwargs["messages"])
+        idx = min(len(self.sent) - 1, len(self._replies) - 1)
+        content = json.dumps({"driver_message": self._replies[idx]})
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+
+def _stub_radio_backend(replies):
+    backend = OpenAIRadioBackend.__new__(OpenAIRadioBackend)
+    client = _StubClient(replies)
+    backend._client = client
+    backend.model = "stub"
+    backend.max_retries = 2
+    backend.fallback = HeuristicRadioBackend()
+    return backend, client
 
 
 class TestRadioAgent(unittest.TestCase):
@@ -232,6 +265,137 @@ class TestRadioAgent(unittest.TestCase):
         self.assertIn("pitted", prompt)
         self.assertNotIn("Pit window: OPEN", prompt)
         self.assertNotIn("Undercut threat", prompt)
+
+    def test_attach_radio_keeps_planned_pit_lap(self):
+        strategy = HeuristicSimBackend(self.replay)
+        sd = strategy.decide_with_sims(self.state)
+        sd.chosen_planned_pit_lap = 34
+        after = attach_radio(self.state, sd, HeuristicRadioBackend())
+        self.assertEqual(after.chosen_planned_pit_lap, 34)
+        self.assertEqual(after.to_dict()["planned_pit_lap"], 34)
+
+    def test_attach_radio_carries_every_strategy_field(self):
+        # replace() is what stops a newly added field from being dropped here.
+        import dataclasses
+
+        from strategy_engineer.strategy import SimAgentDecision
+
+        strategy = HeuristicSimBackend(self.replay)
+        sd = strategy.decide_with_sims(self.state)
+        after = attach_radio(self.state, sd, HeuristicRadioBackend())
+        rewritten = {"decision", "trajectory", "radio"}
+        for f in dataclasses.fields(SimAgentDecision):
+            if f.name in rewritten:
+                continue
+            with self.subTest(field=f.name):
+                self.assertEqual(
+                    getattr(after, f.name), getattr(sd, f.name)
+                )
+
+    def test_similarity_flags_reworded_repeat(self):
+        a = "Stay out. Safety Car pace, keep the tyres under control."
+        b = "Stay out, stay out. Safety car pace, keep the tyres in the window."
+        c = "Box box, box this lap, hard."
+        self.assertGreater(similarity(a, b), 0.6)
+        self.assertTrue(is_repetitive(b, [a]))
+        self.assertFalse(is_repetitive(c, [a, b]))
+
+    def test_radio_log_keeps_last_calls_per_driver(self):
+        log = RadioLog(recall=2)
+        for lap, msg in ((1, "one"), (2, "two"), (3, "three")):
+            log.record(1052, 1, lap, msg)
+        log.record(1052, 2, 1, "other driver")
+        self.assertEqual(log.messages(1052, 1), ("two", "three"))
+        self.assertEqual(log.messages(1052, 2), ("other driver",))
+        log.record(1052, 1, 4, "   ")
+        self.assertEqual(log.messages(1052, 1), ("two", "three"))
+
+    def test_recent_calls_reach_the_prompt(self):
+        from race_engineer.radio import build_radio_user_prompt
+
+        prompt = build_radio_user_prompt(
+            self.state,
+            action="stay",
+            tyre=None,
+            push="med",
+            recent_calls=(RadioCall(lap=21, message="Stay out, safety car."),),
+        )
+        self.assertIn("Radio you already sent", prompt)
+        self.assertIn("lap 21: Stay out, safety car.", prompt)
+
+    def test_repeated_call_is_nudged_once(self):
+        decision = CrewChiefDecision(
+            action="stay",
+            tyre=None,
+            push="med",
+            reason="Stay.",
+            rationale="mean_finish_pos=2.0",
+        )
+        prior = "Stay out. Safety Car pace, keep the tyres under control."
+        backend, client = _stub_radio_backend(
+            [
+                "Stay out, stay out. Safety car pace, keep tyres in the window.",
+                "Track clear in two corners, we go again.",
+            ]
+        )
+        msg = backend.compose(
+            self.state,
+            decision,
+            recent_calls=(RadioCall(lap=21, message=prior),),
+        )
+        self.assertEqual(msg, "Track clear in two corners, we go again.")
+        self.assertEqual(len(client.sent), 2)
+        self.assertIn(
+            "already made", client.sent[1][-1]["content"]
+        )
+
+    def test_fresh_call_costs_one_request(self):
+        decision = CrewChiefDecision(
+            action="stay",
+            tyre=None,
+            push="med",
+            reason="Stay.",
+            rationale="mean_finish_pos=2.0",
+        )
+        backend, client = _stub_radio_backend(["Car behind is closing, two tenths."])
+        msg = backend.compose(
+            self.state,
+            decision,
+            recent_calls=(RadioCall(lap=21, message="Stay out, safety car."),),
+        )
+        self.assertEqual(msg, "Car behind is closing, two tenths.")
+        self.assertEqual(len(client.sent), 1)
+
+    def test_second_repeat_is_sent_rather_than_dropped(self):
+        decision = CrewChiefDecision(
+            action="stay",
+            tyre=None,
+            push="med",
+            reason="Stay.",
+            rationale="mean_finish_pos=2.0",
+        )
+        prior = "Stay out. Safety Car pace, keep the tyres under control."
+        backend, client = _stub_radio_backend(
+            ["Stay out. Safety car pace, keep the tyres under control."]
+        )
+        msg = backend.compose(
+            self.state,
+            decision,
+            recent_calls=(RadioCall(lap=21, message=prior),),
+        )
+        self.assertEqual(
+            msg, "Stay out. Safety car pace, keep the tyres under control."
+        )
+        self.assertEqual(len(client.sent), 2)
+
+    def test_multi_agent_backend_logs_its_own_radio(self):
+        strategy = HeuristicSimBackend(self.replay)
+        multi = MultiAgentSimBackend(strategy, HeuristicRadioBackend())
+        sd = multi.decide_with_sims(self.state)
+        self.assertEqual(
+            multi.radio_log.messages(self.state.race_id, self.state.driver_id),
+            (sd.decision.driver_message,),
+        )
 
     def test_apply_radio_passes_replay(self):
         decision = CrewChiefDecision(

@@ -71,6 +71,60 @@ class TestMemory(unittest.TestCase):
         self.assertIn("L21-23", block)
         self.assertNotIn("L21:", block)
 
+    def _record(self, store, lap, **over):
+        base = dict(
+            action="stay",
+            chosen_option_id="A",
+            chosen_label="hold_plan",
+            oracle_option_id="A",
+            rationale="numbers",
+            sim={"available": True, "oracle_option_id": "A"},
+            mean_finish_pos=1.0,
+            planned_pit_lap=30,
+        )
+        base.update(over)
+        return store.record_sim_decision(self.replay.get_state(1132, 1, lap), **base)
+
+    def test_committed_pit_lap_holds_absolute_target(self):
+        store = RaceMemoryStore()
+        self._record(store, 22, planned_pit_lap=30)
+        self.assertEqual(
+            store.committed_pit_lap(1132, 1, current_lap=23), 30
+        )
+
+    def test_committed_pit_lap_expires_once_target_passes(self):
+        store = RaceMemoryStore()
+        self._record(store, 22, planned_pit_lap=25)
+        self.assertIsNone(store.committed_pit_lap(1132, 1, current_lap=25))
+        self.assertIsNone(store.committed_pit_lap(1132, 1, current_lap=26))
+
+    def test_committed_pit_lap_dropped_after_driver_pits(self):
+        store = RaceMemoryStore()
+        self._record(store, 22, planned_pit_lap=30)
+        self.assertIsNone(
+            store.committed_pit_lap(
+                1132, 1, current_lap=26, pit_laps=frozenset({24})
+            )
+        )
+
+    def test_memory_prompt_shows_target_stop_lap(self):
+        """A label alone cannot show the stop sliding; the absolute lap can."""
+        store = RaceMemoryStore()
+        self._record(store, 21, planned_pit_lap=30)
+        self._record(store, 22, planned_pit_lap=31)
+        block = store.format_prompt_block(1132, 1, before_lap=23)
+        self.assertIn("target stop L30", block)
+        self.assertIn("target stop L31", block)
+        self.assertNotIn("L21-22", block)
+
+    def test_memory_prompt_groups_a_held_target(self):
+        store = RaceMemoryStore()
+        for lap in (21, 22, 23):
+            self._record(store, lap, planned_pit_lap=30)
+        block = store.format_prompt_block(1132, 1, before_lap=24)
+        self.assertIn("L21-23", block)
+        self.assertIn("target stop L30", block)
+
     def test_finish_pos_swing_detection(self):
         store = RaceMemoryStore()
         sim = {"available": True, "oracle_option_id": "D"}
@@ -281,9 +335,17 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(len(off.decisions), len(on.decisions))
         self.assertAlmostEqual(off.mean_regret or 0.0, 0.0)
         self.assertAlmostEqual(on.mean_regret or 0.0, 0.0)
-        self.assertEqual(
-            [d.chosen_option_id for d in off.decisions],
-            [d.chosen_option_id for d in on.decisions],
+        # Choices are no longer expected to match: with memory the option menu
+        # carries a hold_plan card for the committed stop lap, which is the point.
+        # What must hold is that the remembered plan does not slide every lap.
+        targets = [
+            d.chosen_planned_pit_lap
+            for d in on.decisions
+            if d.decision.action != "pit" and d.chosen_planned_pit_lap is not None
+        ]
+        moves = sum(1 for a, b in zip(targets, targets[1:]) if b > a)
+        self.assertLess(
+            moves, len(targets) // 2, msg=f"planned stop keeps sliding: {targets}"
         )
 
 

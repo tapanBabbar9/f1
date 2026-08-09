@@ -11,11 +11,16 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 from race_engineer.radio_heuristic import (
     HeuristicRadioBackend,
     PassthroughRadioBackend,
+)
+from race_engineer.radio_log import (
+    RadioCall,
+    format_recent_calls,
+    is_repetitive,
 )
 from race_engineer.situation import RadioSituation, build_radio_situation
 from shared.decision import (
@@ -40,6 +45,10 @@ sequence, tyre management, or late-race defense. Mention at most one main idea.
 is genuinely live from the context (for example safety car, recent rival stop,
 old tyres, or an active strategy window). Otherwise give the useful status or
 instruction directly.
+
+You are mid-conversation, not starting fresh each lap. Radio you already sent
+is listed for you. The driver has heard it, so do not send it again in new
+words — say what changed since then, or say less.
 
 Speak gaps naturally ("eight tenths", "one point two"). Do not invent facts.
 """
@@ -72,6 +81,7 @@ def build_radio_user_prompt(
     push: PushLevel,
     reason: str = "",
     situation: RadioSituation | None = None,
+    recent_calls: Sequence[RadioCall] = (),
 ) -> str:
     board = state.pit_wall_view(anonymize=True)
     tyre_s = tyre if tyre is not None else "null"
@@ -91,6 +101,9 @@ def build_radio_user_prompt(
     block = sit.prompt_block()
     if block:
         lines.extend(["", block])
+    recent = format_recent_calls(recent_calls)
+    if recent:
+        lines.extend(["", recent])
     lines.append("")
     lines.append("Compose driver_message only.")
     return "\n".join(lines)
@@ -122,6 +135,7 @@ class RadioBackend(Protocol):
         decision: CrewChiefDecision,
         *,
         replay: Any | None = None,
+        recent_calls: Sequence[RadioCall] = (),
     ) -> str: ...
 
 
@@ -170,6 +184,7 @@ class OpenAIRadioBackend:
         decision: CrewChiefDecision,
         *,
         replay: Any | None = None,
+        recent_calls: Sequence[RadioCall] = (),
     ) -> str:
         situation = build_radio_situation(state, replay)
         user = build_radio_user_prompt(
@@ -179,11 +194,14 @@ class OpenAIRadioBackend:
             push=decision.push,
             reason=decision.reason,
             situation=situation,
+            recent_calls=recent_calls,
         )
         messages: list[dict[str, str]] = [
             {"role": "system", "content": RADIO_SYSTEM_PROMPT},
             {"role": "user", "content": user},
         ]
+        recent = [c.message for c in recent_calls]
+        repeat: str | None = None
         for _ in range(self.max_retries + 1):
             try:
                 resp = self._client.chat.completions.create(
@@ -193,7 +211,7 @@ class OpenAIRadioBackend:
                     temperature=0.3,
                 )
                 raw = resp.choices[0].message.content or ""
-                return parse_radio_message(raw)
+                msg = parse_radio_message(raw)
             except Exception as exc:  # noqa: BLE001
                 messages.append(
                     {
@@ -205,7 +223,31 @@ class OpenAIRadioBackend:
                         ),
                     }
                 )
-        return self.fallback.compose(state, decision, replay=replay)
+                continue
+            # One nudge only; a second near-duplicate is better than no call.
+            if repeat is not None or not is_repetitive(msg, recent):
+                return msg
+            repeat = msg
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": json.dumps({"driver_message": msg}),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "That is the call you already made. Send only what "
+                            "has changed since then, or a shorter call."
+                        ),
+                    },
+                ]
+            )
+        if repeat is not None:
+            return repeat
+        return self.fallback.compose(
+            state, decision, replay=replay, recent_calls=recent_calls
+        )
 
 
 def apply_radio(
@@ -214,9 +256,12 @@ def apply_radio(
     radio: RadioBackend,
     *,
     replay: Any | None = None,
+    recent_calls: Sequence[RadioCall] = (),
 ) -> tuple[CrewChiefDecision, RadioResult]:
     """Overwrite driver_message only; strategy fields stay identical."""
-    msg = radio.compose(state, decision, replay=replay).strip()[:120]
+    msg = radio.compose(
+        state, decision, replay=replay, recent_calls=recent_calls
+    ).strip()[:120]
     if not msg:
         msg = HeuristicRadioBackend().compose(state, decision, replay=replay)
     result = RadioResult(

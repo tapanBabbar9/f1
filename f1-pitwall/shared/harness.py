@@ -74,10 +74,17 @@ def planned_pit_lap(
     *,
     action: str,
     label: str | None = None,
+    absolute_pit_lap: int | None = None,
 ) -> int | None:
-    """Map a lap decision to the lap the agent plans to box (if known)."""
+    """Map a lap decision to the lap the agent plans to box (if known).
+
+    `absolute_pit_lap` comes straight off the chosen option card and wins when
+    present: labels like hold_plan carry no offset to parse.
+    """
     if action == "pit":
         return lap + 1
+    if absolute_pit_lap is not None:
+        return absolute_pit_lap
     if label:
         m = _STAY_N_RE.match(label.strip())
         if m:
@@ -384,8 +391,14 @@ def _from_crew_decision(
     *,
     label: str | None = None,
     regret: float | None = None,
+    absolute_pit_lap: int | None = None,
 ) -> HarnessLapDecision:
-    plan = planned_pit_lap(lap, action=decision.action, label=label)
+    plan = planned_pit_lap(
+        lap,
+        action=decision.action,
+        label=label,
+        absolute_pit_lap=absolute_pit_lap,
+    )
     return HarnessLapDecision(
         lap=lap,
         action=decision.action,
@@ -412,6 +425,7 @@ def _from_sim(
         sd.decision,
         label=sd.chosen_label,
         regret=sd.regret,
+        absolute_pit_lap=sd.chosen_planned_pit_lap,
     )
 
 

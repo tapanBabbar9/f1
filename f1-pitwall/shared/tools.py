@@ -117,9 +117,18 @@ class ToolResult:
 class ToolBelt:
     """Execute Phase 3 tools against a fixed (replay, state) binding."""
 
-    def __init__(self, replay: RaceReplay, state: RaceState):
+    def __init__(
+        self,
+        replay: RaceReplay,
+        state: RaceState,
+        *,
+        plan_target_lap: int | None = None,
+    ):
         self.replay = replay
         self.state = state
+        # Absolute stop lap already committed on an earlier lap, if any. Supplied
+        # by the caller (which owns memory) so shared stays independent of it.
+        self.plan_target_lap = plan_target_lap
         self._handlers: dict[str, Callable[[], dict[str, Any]]] = {
             "get_gaps": self.get_gaps,
             "get_stint_age": self.get_stint_age,
@@ -238,15 +247,25 @@ class ToolBelt:
     def simulate_strategies(self) -> dict[str, Any]:
         """Phase 5 option cards: pit-next vs stay-N Monte Carlo."""
         from shared.racing_rules import mandatory_dry_pit_pending
-        from strategy_engineer.sim import DEFAULT_N_ROLLS, oracle_best, simulate_strategy_cards
+        from strategy_engineer.sim import (
+            DEFAULT_N_ROLLS,
+            live_deg_for_state,
+            oracle_best,
+            simulate_strategy_cards,
+        )
 
         try:
             cards = simulate_strategy_cards(
-                self.replay, self.state, n_rolls=DEFAULT_N_ROLLS, seed=42
+                self.replay,
+                self.state,
+                n_rolls=DEFAULT_N_ROLLS,
+                seed=42,
+                plan_target_lap=self.plan_target_lap,
             )
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "error": str(exc)}
         best = oracle_best(cards)
+        live_deg = live_deg_for_state(self.replay, self.state)
         must_pit = mandatory_dry_pit_pending(self.state)
         return {
             "available": True,
@@ -255,6 +274,7 @@ class ToolBelt:
             "oracle_option_id": best.option_id,
             "oracle_label": best.label,
             "oracle_mean_finish_pos": round(best.mean_finish_pos, 3),
+            "live_tyre_deg": live_deg.to_dict(),
             "options": [c.to_dict() for c in cards],
             "note": (
                 "stay_to_finish omitted while mandatory dry pit pending (pit_stops=0)"
